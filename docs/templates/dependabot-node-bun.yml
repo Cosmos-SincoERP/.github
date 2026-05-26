@@ -1,18 +1,31 @@
 version: 2
 updates:
+  # Reemplazar "npm" por "bun" en repos bun-only (con bun.lock y sin
+  # package-lock.json). Dependabot soporta ambos como package-ecosystem.
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 10
+      day: "tuesday"
+    open-pull-requests-limit: 5
     groups:
       types:
+        applies-to: version-updates
         patterns: ["@types/*"]
       eslint:
+        applies-to: version-updates
         patterns: ["eslint*", "@typescript-eslint/*"]
+      all-other:
+        applies-to: version-updates
+        patterns: ["*"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "friday"
+    open-pull-requests-limit: 5
+    groups:
+      all:
+        applies-to: version-updates
+        patterns: ["*"]

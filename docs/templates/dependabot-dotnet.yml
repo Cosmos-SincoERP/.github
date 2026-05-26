@@ -5,14 +5,25 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
     groups:
       microsoft:
+        applies-to: version-updates
         patterns: ["Microsoft.*", "System.*"]
       tests:
+        applies-to: version-updates
         patterns: ["xunit*", "Moq*", "FluentAssertions*", "Bogus*"]
+      all-other:
+        applies-to: version-updates
+        patterns: ["*"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "friday"
+    open-pull-requests-limit: 5
+    groups:
+      all:
+        applies-to: version-updates
+        patterns: ["*"]
