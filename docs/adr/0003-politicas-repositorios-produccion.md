@@ -51,6 +51,15 @@ Drivers nuevos potencialmente relevantes:
 
 ### Prácticas diferidas desde [[0002]]
 
+#### A.3 — Política de creación de repositorios
+- **Estado**: diferida desde [[0002]] por limitación del plan Team.
+- **Origen**: la combinación deseada (`members_can_create_public_repositories=false; members_can_create_private_repositories=true`) no es expresable bajo Team; la API rechaza con HTTP 422. El único toggle granular disponible es `members_can_create_repositories` con valores `all`, `private` (no aplicable en Team) o `none`. Verificado empíricamente 2026-05-26.
+- **Opciones de tratamiento** post-upgrade Enterprise:
+  - Activar `members_can_create_public_repositories=false` (objetivo original de [[0002]]).
+  - Restringir creación de cualquier repo a un team aprobado (más estricto).
+  - Mantener `all` (estado actual) si el riesgo se considera tolerable bajo controles compensatorios.
+- **Condición de activación**: upgrade a plan Enterprise.
+
 #### B.6 — Require signed commits
 - **Estado**: pendiente de decidir.
 - **Opciones de tratamiento** cuando se aborde:

@@ -473,7 +473,7 @@ Cada práctica se describe con los siguientes campos sin recomendación ni decis
 |---|---|---|---|---|
 | A.1 — 2FA obligatorio | Aplicar | org | 0 | [[0002]] |
 | A.2 — Base permission | Aplicar (transición: grandfather actuales como admin, nuevos = `write`) | org | 1 | [[0002]] |
-| A.3 — Creación de repos | Aplicar (restringir solo creación de públicos) | org | 1 | [[0002]] |
+| A.3 — Creación de repos | Diferir (no expresable en Team — reevaluar con Enterprise) | — | 2 | [[0003]] |
 | A.4 — Outside collaborators | Aplicar (prohibidos por default, excepción documentada) | org | 1 | [[0002]] |
 | A.5 — Security managers | Aplicar (asignar team plataforma) | org | 1 | [[0002]] |
 | B.1 — Require PR | Aplicar | org | 0 | [[0002]] |
