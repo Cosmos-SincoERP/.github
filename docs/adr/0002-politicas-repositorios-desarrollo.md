@@ -207,7 +207,7 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 
   ```
   azure/*, microsoft/*, aws-actions/*, google-github-actions/*,
-  hashicorp/*, docker/*, oven-sh/*, ruby/*, gitleaks/*
+  hashicorp/*, docker/*, oven-sh/*, ruby/*, trufflesecurity/*
   ```
 
 - **Tooling**: `pinact` corre en bootstrap por repo, pero su salida se **filtra** para revertir cambios sobre la allowlist anterior (GitHub-owned + verified corp). Solo permanecen los SHA pinning sobre creators que sí lo requieren. La regla operativa para revisores: cualquier PR que introduzca un `uses:` fuera de la allowlist debe pinear por SHA explícitamente.
@@ -281,7 +281,9 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 
 #### E.6 — Secret scanning en repos privados (mitigación open-source)
 - **Decisión**: Aplicar a nivel repo (vía reusable) — Fase 1.
-- **Configuración**: crear `_reusable-secret-scan.yml` en `Cosmos.PlatformWorkflows` corriendo `gitleaks` (o `trufflehog`) sobre el diff del PR. Marcar como required en Ruleset de cada repo privado. Combinado con B.12 (push rulesets), cubre la brecha por falta de GHAS push protection.
+- **Configuración**: `_reusable-secret-scan.yml` en `Cosmos.PlatformWorkflows` corriendo **TruffleHog OSS** (`trufflesecurity/trufflehog`) con flag `--only-verified` sobre el diff del PR. Marcar como required en Ruleset de cada repo privado. Combinado con B.12 (push rulesets), cubre la brecha por falta de GHAS push protection.
+- **Elección de herramienta**: TruffleHog OSS sobre gitleaks. `gitleaks-action@v2` requiere licencia comercial para organizaciones (verificado empíricamente 2026-05-26 al activar el reusable: *"[org] is an organization. License key is required."*). TruffleHog OSS es verified creator en Marketplace, sin licencia, mantenido activamente por TruffleSecurity. La flag `--only-verified` filtra falsos positivos validando los secrets con el provider (AWS, Azure, GitHub, etc.).
+- **Pinning**: TruffleHog no publica tag mayor móvil (`@v3` no existe, solo tags específicos `@v3.95.3`). Se pinea por SHA exacto con comentario de versión. Dependabot `github-actions` ecosystem mantiene la SHA actualizada.
 - **Justificación**: el riesgo de secretos filtrados es real; sin GHAS hay que cubrirlo. Reevaluar en [[0003]] al evaluar upgrade Enterprise.
 
 #### E.7 — Code scanning / CodeQL
@@ -537,7 +539,7 @@ Cada repo copia (o el script de bootstrap copia automáticamente) la plantilla q
 Añadir a la rama `chore/bootstrap-plataforma`:
 
 - `_reusable-dependency-review.yml` (E.4) — corre `actions/dependency-review-action`.
-- `_reusable-secret-scan.yml` (E.6) — corre `gitleaks` sobre el diff del PR.
+- `_reusable-secret-scan.yml` (E.6) — corre `trufflesecurity/trufflehog` con `--only-verified` sobre el diff del PR.
 
 Documentar nombres de check uniformes para que sean referenciables desde Rulesets de los repos consumidores.
 
@@ -603,7 +605,7 @@ Ver Apéndice A4 — `scripts/bootstrap-repo.sh`.
 | B.11 Tag protection | Sin releases productivos todavía. |
 | D.2 Environments con required reviewers | Sin ambiente productivo. |
 | D.10 Required workflows org-wide | No disponible en Team; reevaluar con upgrade Enterprise. |
-| E.6 Reevaluación con GHAS | Si se sube a Enterprise, secret scanning + push protection nativo sustituye `gitleaks` reusable. |
+| E.6 Reevaluación con GHAS | Si se sube a Enterprise, secret scanning + push protection nativo sustituye `trufflehog` reusable. |
 | E.7 Code scanning / CodeQL | Reevaluar con GHAS o alternativas OSS (Semgrep) en producción. |
 | E.8 Private vulnerability reporting | Coherente con activar junto con `SECURITY.md`. |
 | E.9 `SECURITY.md` | Sin canal de reporte formalizado, aporta poco. |
@@ -630,7 +632,7 @@ Ver Apéndice A4 — `scripts/bootstrap-repo.sh`.
 - ✅ **Riesgos críticos mitigados rápidamente**. Fase 0 cubre 2FA, push protection contra paths sensibles, require PR como bloqueo de push directo, permisos mínimos en GITHUB_TOKEN, Dependabot alerts + security updates.
 - ✅ **Consistencia vía Rulesets org-wide**. Las reglas B.1–B.9, B.12 aplican uniformemente sin replicar por repo.
 - ✅ **Aprovecha activos previos**. Las decisiones D.7 + D.9 reconocen y formalizan parcialmente el trabajo de `Cosmos.PlatformWorkflows`; nuevos reusables (E.4, E.6) se construyen en el mismo lugar.
-- ✅ **Brecha de GHAS cubierta parcialmente**. B.12 + E.6 (gitleaks reusable) atajan la mayoría de los casos de secretos accidentales sin requerir upgrade.
+- ✅ **Brecha de GHAS cubierta parcialmente**. B.12 + E.6 (TruffleHog reusable) atajan la mayoría de los casos de secretos accidentales sin requerir upgrade.
 - ⚠️ **Fricción inicial controlada pero real**. Squash-only, Actions allowlist y migración de pinning a SHA introducen cambios en flujos existentes; mitigar con comunicación y periodo de gracia.
 - ⚠️ **Transición de base permission es delicada**. La estrategia de grandfather vía team requiere ejecución cuidadosa; si se ejecuta mal, devs pierden accesos legítimos.
 - ⚠️ **B.2=0 approvals + C.4 auto-merge**. Bajo flujo IA, la combinación permite que PRs auto-generados mergeen con solo checks verdes y sin revisión humana. Mitigaciones: D.1 (status checks obligatorios), E.4 (dependency review), E.6 (secret scan), B.5 (conversation resolution). Reevaluar para repos críticos en [[0003]].
