@@ -195,9 +195,23 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 - **Justificación**: sin ambiente productivo, los environments tienen valor limitado.
 
 #### D.3 — Pinning de acciones
-- **Decisión**: Aplicar — Fase 1.
-- **Configuración**: acciones de terceros pineadas por SHA inmutable; reusables internos de `Cosmos.PlatformWorkflows` referenciados por `@v1`. Habilitar Dependabot `github-actions` ecosystem para automatizar actualizaciones de SHAs.
-- **Justificación**: protección contra supply chain attacks por movimiento malicioso de tags (caso `tj-actions/changed-files`, marzo 2025). Para internos, `@v1` mantiene operación sin overhead — el control está dentro del perímetro.
+- **Decisión**: Aplicar — Fase 1, con política diferenciada por nivel de confianza del creator.
+- **Configuración**:
+  - **GitHub-owned (`actions/*`, `github/*`)** → tag mayor (`@v4`, `@v5`). Justificación: si GitHub mismo se compromete, el SHA pinning no protege — GitHub controla la infra del runner. Valor agregado marginal y costo de mantenimiento real (legibilidad + Dependabot bumps por SHA).
+  - **Verified creators corporativos** (lista mantenida abajo) → tag mayor. Justificación: tienen procesos de release auditados, security teams y code signing. Riesgo de compromiso individual es bajo y los CVEs llegan vía Dependabot security alerts.
+  - **Resto (creators individuales o no-verified)** → SHA inmutable obligatorio. Justificación: 1 PAT comprometido del mantenedor único = juego terminado (caso emblema: `tj-actions/changed-files`, marzo 2025, ~23 000 repos afectados al reasignar tags retroactivamente).
+  - **Reusables internos de `Cosmos.PlatformWorkflows`** → `@v1` (referencia móvil controlada dentro del perímetro).
+  - **Dependabot `github-actions` ecosystem** habilitado en todos los repos para mantener tags y SHAs al día sin intervención manual.
+
+  Lista canónica de verified-creators-as-tag (a actualizar cuando entre un nuevo creator al portafolio):
+
+  ```
+  azure/*, microsoft/*, aws-actions/*, google-github-actions/*,
+  hashicorp/*, docker/*, oven-sh/*, ruby/*, gitleaks/*
+  ```
+
+- **Tooling**: `pinact` corre en bootstrap por repo, pero su salida se **filtra** para revertir cambios sobre la allowlist anterior (GitHub-owned + verified corp). Solo permanecen los SHA pinning sobre creators que sí lo requieren. La regla operativa para revisores: cualquier PR que introduzca un `uses:` fuera de la allowlist debe pinear por SHA explícitamente.
+- **Justificación general**: protección contra supply chain attacks por movimiento malicioso de tags (caso `tj-actions/changed-files`, marzo 2025) **donde el riesgo es material** (creators individuales). Para creators corporativos verified y GitHub-owned, la práctica de la industria (y la posición oficial pragmática de GitHub: *"the 'Verified creator' badge is a useful signal"*) considera el tag mayor aceptable. La política diferenciada reduce ruido visual en cada workflow y costo de mantenimiento sin abandonar el caso de uso real de SHA pinning (creators individuales / no-verified).
 
 #### D.4 — `permissions:` mínimo en `GITHUB_TOKEN`
 - **Decisión**: Aplicar (org) — Fase 0.
