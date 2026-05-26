@@ -207,7 +207,7 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 
   ```
   azure/*, microsoft/*, aws-actions/*, google-github-actions/*,
-  hashicorp/*, docker/*, oven-sh/*, ruby/*, trufflesecurity/*
+  hashicorp/*, docker/*, oven-sh/*, ruby/*, trufflesecurity/*, aquasecurity/*
   ```
 
 - **Tooling**: `pinact` corre en bootstrap por repo, pero su salida se **filtra** para revertir cambios sobre la allowlist anterior (GitHub-owned + verified corp). Solo permanecen los SHA pinning sobre creators que sí lo requieren. La regla operativa para revisores: cualquier PR que introduzca un `uses:` fuera de la allowlist debe pinear por SHA explícitamente.
@@ -271,9 +271,12 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 - **Justificación**: mantiene dependencias al día proactivamente. Las plantillas estandarizan la configuración entre repos.
 
 #### E.4 — Dependency review action en PRs
-- **Decisión**: Aplicar a nivel repo (vía reusable) — Fase 1.
-- **Configuración**: crear `_reusable-dependency-review.yml` en `Cosmos.PlatformWorkflows`; cada repo lo invoca y lo marca como required en su Ruleset.
-- **Justificación**: bloquea PRs que introducen deps vulnerables/licencias prohibidas en la puerta de entrada. Alto valor bajo flujo IA. **Nota**: en repos privados, Dependency Review puede tener limitaciones sin GHAS; verificar al implementar y, si aplica, registrar mitigación.
+- **Decisión**: Aplicar a nivel repo (vía reusable) — Fase 1, con **Trivy OSS** como herramienta (no `actions/dependency-review-action`).
+- **Configuración**: `_reusable-dependency-review.yml` en `Cosmos.PlatformWorkflows` corriendo `aquasecurity/trivy-action` con `scan-type: fs` y `severity: HIGH,CRITICAL` sobre el repo del PR. Cada repo lo invoca vía `security-checks.yml` y lo marca como required en su Ruleset (cuando D.1 se cierre con un mecanismo unificado de required checks).
+- **Elección de herramienta**: Trivy sobre `actions/dependency-review-action`. La acción de GitHub **requiere GitHub Advanced Security (GHAS) en repos privados** (verificado empíricamente 2026-05-26: *"Dependency review is not supported on this repository. Please ensure that Dependency graph is enabled along with GitHub Advanced Security"*). GHAS solo está disponible en plan Enterprise. Trivy OSS es verified creator en Marketplace, sin licencia, mantenido activamente por Aqua Security. Cobertura equivalente para el caso de uso principal (CVE en deps), con bonus: también escanea Dockerfiles, IaC (Terraform, Kubernetes), y otros stacks no .NET.
+- **Pinning**: Trivy no publica tag mayor móvil (`@v0` no existe, solo tags específicos como `@v0.36.0`). Se pinea por SHA exacto con comentario de versión. Dependabot `github-actions` ecosystem mantiene la SHA actualizada.
+- **Trade-off vs `dependency-review-action`**: pierdes la integración nativa con el dependency graph y los comentarios automáticos en el PR. Ganas: funciona en Team, sin coste, cobertura más amplia. Reevaluar en [[0003]] al activarse GHAS si se decide.
+- **Justificación**: bloquea PRs que introducen deps vulnerables en la puerta de entrada. Alto valor bajo flujo IA.
 
 #### E.5 — Secret scanning para repos públicos
 - **Decisión**: Documentar como activo; sin asignación formal de revisión.
@@ -538,7 +541,7 @@ Cada repo copia (o el script de bootstrap copia automáticamente) la plantilla q
 
 Añadir a la rama `chore/bootstrap-plataforma`:
 
-- `_reusable-dependency-review.yml` (E.4) — corre `actions/dependency-review-action`.
+- `_reusable-dependency-review.yml` (E.4) — corre `aquasecurity/trivy-action` con `scan-type: fs` y `severity: HIGH,CRITICAL` (reemplaza a `actions/dependency-review-action` que requiere GHAS).
 - `_reusable-secret-scan.yml` (E.6) — corre `trufflesecurity/trufflehog` con `--only-verified` sobre el diff del PR.
 
 Documentar nombres de check uniformes para que sean referenciables desde Rulesets de los repos consumidores.
