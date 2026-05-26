@@ -58,9 +58,8 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 - **Justificación**: bajar uniformemente a `read` o `none` rompería accesos legítimos vigentes; la transición vía team explícito grandfather a los actuales sin perder el endurecimiento para nuevos.
 
 #### A.3 — Política de creación de repositorios
-- **Decisión**: Aplicar (org) — Fase 1.
-- **Configuración**: `members_can_create_public_repositories = false`; `members_can_create_private_repositories = true`.
-- **Justificación**: reduce riesgo de exposición accidental de código interno como público; mantiene autonomía para experimentar en privado.
+- **Decisión**: Diferir a [[0003]] — bloqueado por limitación del plan Team.
+- **Justificación**: la intención original (aplicar `members_can_create_public_repositories = false; members_can_create_private_repositories = true`) no es expresable en el plan Team. La API de GitHub rechaza esa combinación con HTTP 422; el único toggle granular disponible es `members_can_create_repositories` con valores `all`, `private`, o `none` — y `private` requiere plan Pro+ u Org Owner restrictivo que no aplica acá. Las opciones reales bajo Team son aceptar el riesgo (estado actual) o bloquear toda creación (rompe la autonomía privada que se quería preservar). Se difiere a [[0003]] para reevaluar con upgrade Enterprise, donde la configuración deseada es expresable nativamente. Verificado empíricamente 2026-05-26 al intentar aplicar la decisión.
 
 #### A.4 — Política de outside collaborators
 - **Decisión**: Aplicar (org) — Fase 1.
@@ -401,13 +400,9 @@ gh api -X PUT orgs/Cosmos-SincoERP/security-managers/teams/<team-slug>
 
 `<team-slug>` = slug del team de plataforma/seguridad (crear el team antes si no existe).
 
-#### 8. Restringir creación de repos públicos (A.3)
+#### 8. ~~Restringir creación de repos públicos (A.3)~~ — diferido a [[0003]]
 
-```bash
-gh api -X PATCH orgs/Cosmos-SincoERP \
-  -F members_can_create_public_repositories=false \
-  -F members_can_create_private_repositories=true
-```
+La combinación deseada (`members_can_create_public_repositories=false; members_can_create_private_repositories=true`) no es expresable en el plan Team — la API responde HTTP 422. Reevaluar con upgrade Enterprise. Ver decisión A.3 actualizada arriba.
 
 #### 9. Definir política de outside collaborators (A.4)
 
@@ -589,6 +584,7 @@ Ver Apéndice A4 — `scripts/bootstrap-repo.sh`.
 
 | Práctica | Razón |
 |---|---|
+| A.3 Creación de repos | Combinación deseada (públicos=false, privados=true) no expresable en Team (API rechaza 422). Reevaluar con Enterprise. |
 | B.6 Signed commits | Alto costo de setup, valor moderado en dev. Reevaluar para repos críticos. |
 | B.11 Tag protection | Sin releases productivos todavía. |
 | D.2 Environments con required reviewers | Sin ambiente productivo. |
