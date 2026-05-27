@@ -46,24 +46,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Generate token (App preferido, PAT bridge fallback)
+      # Genera un token efímero (~1h) scoped a todos los repos de la org
+      # donde está instalada la App cosmos-governance-sync.
+      - name: Generate App token
         id: token
-        env:
-          APP_ID: ${{ secrets.GOVERNANCE_SYNC_APP_ID }}
-          APP_KEY: ${{ secrets.GOVERNANCE_SYNC_APP_PRIVATE_KEY }}
-          PAT: ${{ secrets.GOVERNANCE_SYNC_PAT }}
-        run: |
-          if [ -n "$APP_ID" ] && [ -n "$APP_KEY" ]; then
-            echo "::error::App token aún no implementado. Use bridge PAT mientras tanto."
-            exit 1
-          elif [ -n "$PAT" ]; then
-            echo "::add-mask::$PAT"
-            echo "token=$PAT" >> "$GITHUB_OUTPUT"
-            echo "Usando PAT bridge (temporal; migrar a GitHub App)"
-          else
-            echo "::error::No credential available. Configurar GOVERNANCE_SYNC_APP_ID+KEY o GOVERNANCE_SYNC_PAT."
-            exit 1
-          fi
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GOVERNANCE_SYNC_APP_ID }}
+          private-key: ${{ secrets.GOVERNANCE_SYNC_APP_PRIVATE_KEY }}
+          owner: Cosmos-SincoERP
 
       - name: Install yq
         run: |
