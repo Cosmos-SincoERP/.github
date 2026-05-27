@@ -7,7 +7,7 @@
 #   SYNC_SHA     — SHA del commit en este repo que disparó el sync
 #   DRY_RUN      — "true" para no abrir PRs (default false)
 #   TARGET_REPO  — nombre de repo (sin owner) para filtrar; vacío = todos
-#   ONLY         — all | dependabot | uses
+#   ONLY         — all | dependabot | uses | security-checks
 
 set -euo pipefail
 
@@ -137,7 +137,27 @@ process_repo() {
     fi
   fi
 
-  # ─ Cambio 2: uses: en workflows ──────────────────────────────────────────
+  # ─ Cambio 2: security-checks.yml ─────────────────────────────────────────
+  # Cuando un repo consume reusables, debe tener el workflow security-checks
+  # (que invoca dependency-review + secret-scan). Es un archivo fijo, idéntico
+  # en todos los repos; se trata como template gestionado.
+  if [[ ",$consumes," == *,reusables,* ]] && [[ "$ONLY" == "all" || "$ONLY" == "security-checks" ]]; then
+    local desired_sec current_sec
+    desired_sec="$(cat "$TEMPLATES_DIR/security-checks.yml")"
+    current_sec="$(fetch_remote_file "$owner_repo" ".github/workflows/security-checks.yml")"
+
+    if [ "$desired_sec" != "$current_sec" ]; then
+      mkdir -p "$repo_workdir/.github/workflows"
+      echo "$desired_sec" > "$repo_workdir/.github/workflows/security-checks.yml"
+      has_changes=true
+      change_summary+=("- \`.github/workflows/security-checks.yml\`: adopted managed template")
+      log "  ✎ security-checks.yml difiere — marcado para cambio"
+    else
+      log "  ✓ security-checks.yml al día"
+    fi
+  fi
+
+  # ─ Cambio 3: uses: en workflows ──────────────────────────────────────────
   if [[ ",$consumes," == *,reusables,* ]] && [[ "$ONLY" == "all" || "$ONLY" == "uses" ]]; then
     local workflows
     workflows="$(list_remote_workflows "$owner_repo")"

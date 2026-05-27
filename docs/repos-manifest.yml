@@ -2,7 +2,8 @@
 # Repos governed by the .github sync workflows.
 #
 # Source of verdad: repos en la org Cosmos-SincoERP que consumen
-# `dependabot.yml` y/o `_reusable-*.yml` desde este repo.
+# `dependabot.yml`, `security-checks.yml` y/o `_reusable-*.yml`
+# desde este repo.
 #
 # Editar este archivo es la forma de onboarding/offboarding del sync.
 # Stack determina cuál template de dependabot se propaga.
@@ -25,6 +26,16 @@ repos:
     consumes: [reusables, dependabot]
     # Sin Dockerfiles: librería pura, no se containeriza.
 
+  - name: Cosmos.CrossCuttingConcerns
+    stack: dotnet
+    consumes: [reusables, dependabot]
+    # Sin Dockerfiles: librerías puras.
+
+  - name: Cosmos.Types
+    stack: dotnet
+    consumes: [reusables, dependabot]
+    # Sin Dockerfiles: librería pura.
+
   # ── ApplicationPlane (orquestador del plane) ────────────────────
   - name: ApplicationPlane
     stack: dotnet
@@ -32,6 +43,43 @@ repos:
     overrides:
       docker_directories:
         - /src/Gateway/ApplicationPlane.Gateway
+
+  - name: ApplicationPlane.Infraestructura
+    stack: terraform
+    consumes: [reusables, dependabot]
+    overrides:
+      terraform_directory: /infra
+
+  # ── ControlPlanes ───────────────────────────────────────────────
+  - name: ControlPlane
+    stack: dotnet
+    consumes: [reusables, dependabot]
+    # Dockerfiles a confirmar; sin override por ahora.
+
+  - name: ObligacionesPorPagar.ControlPlane
+    stack: dotnet
+    consumes: [reusables, dependabot]
+    # Dockerfiles a confirmar; sin override por ahora.
+
+  # ── Asistente ───────────────────────────────────────────────────
+  - name: Cosmos.Asistente
+    stack: dotnet
+    consumes: [reusables, dependabot]
+    # Dockerfiles a confirmar; sin override por ahora.
+
+  - name: Cosmos.Asistente.Front
+    stack: node-bun
+    consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /
+
+  - name: Cosmos.Front.Shell
+    stack: node-bun
+    consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /
 
   # ── Contabilidad ────────────────────────────────────────────────
   - name: Cosmos.Contabilidad
@@ -153,46 +201,73 @@ repos:
         - /ObligacionesPorPagar.Reconocimiento.Consultas.API
         - /ObligacionesPorPagar.Reconocimiento.Consultas.MCP.Server
 
+  - name: ObligacionesPorPagar.Integraciones
+    stack: dotnet
+    consumes: [reusables, dependabot]
+    # Dockerfiles a confirmar.
+
+  # ── Repos placeholder / docs / templates ────────────────────────
+  # Solo necesitan baseline (security-checks vía reusables + dependabot
+  # github-actions). Sin código de aplicación aún, o solo docs/diagrams.
+
+  - name: Cosmos.Direcciones
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  - name: Cosmos.DatosReferencia
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  - name: Cosmos.Terceros.Front
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  - name: Analisis.ObligacionesPorPagar
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  - name: blog-ingenieria
+    stack: github-actions
+    consumes: [reusables, dependabot]
+    # Jekyll/Ruby (Gemfile presente). Dependabot ruby no está cubierto
+    # por nuestros templates; se mantiene solo github-actions.
+
+  - name: architecture
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  - name: Plataforma
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  - name: erp-definiciones
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  - name: template-progressive-tdd-katas
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  - name: Bootcamp
+    stack: github-actions
+    consumes: [reusables, dependabot]
+    # Repo de capacitación; baseline aplicado, sin pipeline productiva.
+
+  - name: CuentasPorPagar_Bootcamp
+    stack: github-actions
+    consumes: [reusables, dependabot]
+    # Repo de capacitación público.
+
 # ─────────────────────────────────────────────────────────────────
 # Opt-out explícito. Repos en la org que NO entran al sync.
 # Cada entrada requiere `reason:` justificando.
 # ─────────────────────────────────────────────────────────────────
 skip:
   - name: Cosmos.AgentSkills
-    reason: "ex-Cosmos.PlatformWorkflows, renombrado tras la migración de reusables; governance se redefine aparte (solo skills + tooling)"
+    reason: "ex-Cosmos.PlatformWorkflows; ahora es repo fuente de skills/tooling, governance se redefine aparte"
 
-  # Repos POC / bootcamp / archive-candidates
-  - name: Bootcamp
-    reason: "repo de capacitación, sin pipeline productiva"
-  - name: CuentasPorPagar
-    reason: "POC, sin pipeline productiva"
-  - name: CuentasPorPagar_Bootcamp
-    reason: "repo de capacitación público"
-  - name: SistemaRespiratorio
-    reason: "POC público"
-  - name: Bootcamp_Battleship
-    reason: "repo de capacitación público"
-  - name: Bletchley
-    reason: "POC interno"
+  - name: Cosmos.Terceros
+    reason: "default branch ≠ main (feature/dominio); excepción documentada en .github#16"
+
   - name: ObligacionesPorPaga.POC.ContainerApss
-    reason: "POC, no productivo"
-  - name: OxPFrontProvisional
-    reason: "deprecado, reemplazado por ObligacionesPorPagar.Front"
-  - name: Entradas
-    reason: "repo legacy, evaluar migración o archivo"
-
-# ─────────────────────────────────────────────────────────────────
-# Pendientes de clasificar (revisar uno por uno):
-#   - ControlPlane, ObligacionesPorPagar.ControlPlane: confirmar si
-#     son consumidores o infraestructura aparte.
-#   - Cosmos.Direcciones, Cosmos.Asistente, Cosmos.Asistente.Front,
-#     Cosmos.Terceros, Cosmos.Terceros.Front, Cosmos.DatosReferencia,
-#     Cosmos.CrossCuttingConcerns, Cosmos.Front.Shell, OCR,
-#     ObligacionesPorPagar.Integraciones, Analisis.ObligacionesPorPagar,
-#     ApplicationPlane.Infraestructura: agregar cuando se confirme
-#     uso de reusables o stack.
-#   - erp-definiciones, blog-ingenieria, architecture, diseno-modelo,
-#     Plataforma, ThirdParties, Alejandria, template-progressive-tdd-katas:
-#     repos de documentación / template; decidir si necesitan dependabot
-#     (ej. para GitHub Actions de cualquier workflow que tengan).
-# ─────────────────────────────────────────────────────────────────
+    reason: "repo vacío (size=0); no aplica sync hasta tener contenido"

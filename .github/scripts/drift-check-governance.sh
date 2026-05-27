@@ -60,6 +60,7 @@ list_remote_workflows() {
 
 # Drift findings — acumulan líneas markdown
 declare -a DRIFT_DEPENDABOT=()
+declare -a DRIFT_SECURITY_CHECKS=()
 declare -a DRIFT_REUSABLES_STALE=()
 declare -a DRIFT_ORPHAN_REPOS=()
 
@@ -84,7 +85,21 @@ check_repo() {
     fi
   fi
 
-  # 2. uses: residuales al repo viejo
+  # 2. security-checks.yml drift
+  if [[ ",$consumes," == *,reusables,* ]]; then
+    local desired_sec current_sec
+    desired_sec="$(cat "$TEMPLATES_DIR/security-checks.yml" 2>/dev/null || true)"
+    current_sec="$(fetch_remote_file "$owner_repo" ".github/workflows/security-checks.yml")"
+    if [ -n "$desired_sec" ] && [ "$desired_sec" != "$current_sec" ]; then
+      if [ -z "$current_sec" ]; then
+        DRIFT_SECURITY_CHECKS+=("- [\`$owner_repo\`](https://github.com/$owner_repo) — falta \`.github/workflows/security-checks.yml\`")
+      else
+        DRIFT_SECURITY_CHECKS+=("- [\`$owner_repo/.github/workflows/security-checks.yml\`](https://github.com/$owner_repo/blob/main/.github/workflows/security-checks.yml) — drift contra template")
+      fi
+    fi
+  fi
+
+  # 3. uses: residuales al repo viejo
   if [[ ",$consumes," == *,reusables,* ]]; then
     local workflows
     workflows="$(list_remote_workflows "$owner_repo")"
@@ -123,7 +138,7 @@ check_orphans() {
 }
 
 build_report() {
-  local total_drift=$((${#DRIFT_DEPENDABOT[@]} + ${#DRIFT_REUSABLES_STALE[@]} + ${#DRIFT_ORPHAN_REPOS[@]}))
+  local total_drift=$((${#DRIFT_DEPENDABOT[@]} + ${#DRIFT_SECURITY_CHECKS[@]} + ${#DRIFT_REUSABLES_STALE[@]} + ${#DRIFT_ORPHAN_REPOS[@]}))
 
   cat <<EOF
 > Reporte automático generado por \`drift-check-governance.yml\` el $(date -u +'%Y-%m-%d %H:%M UTC').
@@ -142,7 +157,20 @@ EOF
 
   cat <<EOF
 
-## 2. Referencias stale al repo viejo
+## 2. Security-checks drift
+
+Repos cuyo \`.github/workflows/security-checks.yml\` falta o no coincide con el template gestionado.
+
+EOF
+  if [ ${#DRIFT_SECURITY_CHECKS[@]} -eq 0 ]; then
+    echo "_Sin drift._"
+  else
+    printf '%s\n' "${DRIFT_SECURITY_CHECKS[@]}"
+  fi
+
+  cat <<EOF
+
+## 3. Referencias stale al repo viejo
 
 Workflows que aún apuntan a \`$OLD_REUSABLES\` en vez de a \`$SELF_REPO\`.
 
@@ -155,7 +183,7 @@ EOF
 
   cat <<EOF
 
-## 3. Repos sin clasificar
+## 4. Repos sin clasificar
 
 Repos en \`$ORG\` no archivados que no están en \`repos:\` ni en \`skip:\` del manifest.
 
@@ -171,7 +199,8 @@ EOF
 ---
 
 **Cómo actuar:**
-- Drift de dependabot: disparar \`sync-governance.yml\` (workflow_dispatch).
+- Drift de dependabot: disparar \`sync-governance.yml\` (workflow_dispatch) o \`only=dependabot\`.
+- Drift de security-checks: disparar sync con \`only=security-checks\`.
 - Referencias stale: disparar sync con \`only=uses\`.
 - Repos sin clasificar: añadirlos al manifest (\`repos:\` o \`skip:\` con \`reason:\`).
 EOF
@@ -231,6 +260,7 @@ main() {
       echo "# Drift check — resumen"
       echo
       echo "- Dependabot drift: **${#DRIFT_DEPENDABOT[@]}**"
+      echo "- Security-checks drift: **${#DRIFT_SECURITY_CHECKS[@]}**"
       echo "- Reusables stale: **${#DRIFT_REUSABLES_STALE[@]}**"
       echo "- Repos huérfanos: **${#DRIFT_ORPHAN_REPOS[@]}**"
     } >> "$GITHUB_STEP_SUMMARY"
