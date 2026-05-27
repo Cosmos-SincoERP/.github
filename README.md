@@ -22,7 +22,8 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 │   │   └── README.md                # Doc de los reusables (catálogo + uso)
 │   └── scripts/
 │       ├── sync-governance.sh       # Lógica del sync
-│       └── drift-check-governance.sh
+│       ├── drift-check-governance.sh
+│       └── scan-repo.sh             # Helper de onboarding: propone bloque manifest
 ├── docs/
 │   ├── adr/                          # Architecture Decision Records (MADR-lite)
 │   │   ├── README.md                 # Índice y guía para nuevos ADRs
@@ -55,6 +56,22 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 - [`docs/repos-manifest.yml`](docs/repos-manifest.yml) — inventario de repos consumidores con su stack y overrides. Editar para hacer onboarding/offboarding.
 - [`.github/workflows/sync-governance.yml`](.github/workflows/sync-governance.yml) — propaga cambios. Triggers: push a `main` con cambios en templates/manifest/reusables, o `workflow_dispatch` (con `dry_run`).
 - [`.github/workflows/drift-check-governance.yml`](.github/workflows/drift-check-governance.yml) — cron semanal. Reporta drift en una issue actualizable de este repo.
+
+## Operación: onboarding de un repo al manifest
+
+`scan-repo.sh` propone el bloque YAML listo para pegar en `docs/repos-manifest.yml` haciendo un clone shallow del repo e infiriendo stack + overrides.
+
+```bash
+$ bash .github/scripts/scan-repo.sh Cosmos.NuevoRepo
+  - name: Cosmos.NuevoRepo
+    stack: dotnet  # inferido
+    consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /Cosmos.NuevoRepo.API
+```
+
+Heurísticas: `*.csproj`/`*.sln`→`dotnet`, `package.json`→`node-bun`, `*.tf`→`terraform`, sino `github-actions`. Detecta `Dockerfile`s para `docker_directories` y `/infra` como `terraform_directory` cuando aplica. La salida es una sugerencia — revisar antes de pegar.
 
 ## Repositorios relacionados
 
