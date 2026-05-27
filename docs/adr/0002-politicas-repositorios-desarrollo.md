@@ -36,7 +36,7 @@ Se adopta el **modelo C — Baseline org-wide + plantillas vendoreadas**:
 
 - Las prácticas marcadas como `Aplicar (org)` se materializan vía **Rulesets a nivel organización** targeting `~DEFAULT_BRANCH`.
 - Las prácticas que requieren archivos por repo (`dependabot.yml`, `CODEOWNERS` específico) usan **plantillas vivas** en `Cosmos-SincoERP/.github` (defaults org-wide) o vendoreadas por repo donde se requiera personalización.
-- La capa de CI/CD se construye sobre los **reusables ya existentes** en `Cosmos-SincoERP/Cosmos.PlatformWorkflows`.
+- La capa de CI/CD se construye sobre los **reusables ya existentes**, migrados en mayo 2026 desde `Cosmos.PlatformWorkflows` (hoy `Cosmos.AgentSkills`, conserva solo skills) a `Cosmos-SincoERP/.github`.
 - No se activa segmentación por tier en esta fase (el mecanismo de custom properties queda disponible para [[0003]]).
 
 Esta decisión es la consecuencia natural de las decisiones por práctica que siguen.
@@ -123,7 +123,7 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 
 #### B.11 — Tag protection rules
 - **Decisión**: Diferir a [[0003]].
-- **Justificación**: sin releases formales productivos todavía, no hay tags estables que proteger más allá de los `@v1` de `Cosmos.PlatformWorkflows`. Reevaluar cuando exista proceso de release.
+- **Justificación**: sin releases formales productivos todavía, no hay tags estables que proteger más allá de los `@v1` de `Cosmos-SincoERP/.github` (reusables migrados desde `Cosmos.PlatformWorkflows`). Reevaluar cuando exista proceso de release.
 
 #### B.12 — Push rulesets (paths, extensiones, tamaño)
 - **Decisión**: Aplicar (org) — Fase 0.
@@ -187,7 +187,7 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 
 #### D.1 — Status checks obligatorios
 - **Decisión**: Aplicar a nivel repo (vía reusables) — Fase 1.
-- **Configuración**: cada repo marca como required los checks correspondientes a su stack: build/test (.NET = `_reusable-tests-dotnet.yml`, frontend = `_reusable-tests-frontend.yml`). Los reusables de `Cosmos.PlatformWorkflows` deben exponer nombres de check estandarizados para que sean referenciables uniformemente desde Rulesets.
+- **Configuración**: cada repo marca como required los checks correspondientes a su stack: build/test (.NET = `_reusable-tests-dotnet.yml`, frontend = `_reusable-tests-frontend.yml`). Los reusables (en `Cosmos-SincoERP/.github`) deben exponer nombres de check estandarizados para que sean referenciables uniformemente desde Rulesets.
 - **Justificación**: status checks son la barrera de calidad más confiable bajo flujo IA. No se puede forzar org-wide en Team (Required Workflows requiere Enterprise → ver D.10).
 
 #### D.2 — Environments con required reviewers
@@ -200,7 +200,7 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
   - **GitHub-owned (`actions/*`, `github/*`)** → tag mayor (`@v4`, `@v5`). Justificación: si GitHub mismo se compromete, el SHA pinning no protege — GitHub controla la infra del runner. Valor agregado marginal y costo de mantenimiento real (legibilidad + Dependabot bumps por SHA).
   - **Verified creators corporativos** (lista mantenida abajo) → tag mayor. Justificación: tienen procesos de release auditados, security teams y code signing. Riesgo de compromiso individual es bajo y los CVEs llegan vía Dependabot security alerts.
   - **Resto (creators individuales o no-verified)** → SHA inmutable obligatorio. Justificación: 1 PAT comprometido del mantenedor único = juego terminado (caso emblema: `tj-actions/changed-files`, marzo 2025, ~23 000 repos afectados al reasignar tags retroactivamente).
-  - **Reusables internos de `Cosmos.PlatformWorkflows`** → `@v1` (referencia móvil controlada dentro del perímetro).
+  - **Reusables internos de `Cosmos-SincoERP/.github`** → `@v1` (referencia móvil controlada dentro del perímetro).
   - **Dependabot `github-actions` ecosystem** habilitado en todos los repos para mantener tags y SHAs al día sin intervención manual.
 
   Lista canónica de verified-creators-as-tag (a actualizar cuando entre un nuevo creator al portafolio):
@@ -216,7 +216,7 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 #### D.4 — `permissions:` mínimo en `GITHUB_TOKEN`
 - **Decisión**: Aplicar (org) — Fase 0.
 - **Configuración**: Settings org → Actions → Workflow permissions → "Read repository contents and packages permissions" (default `read-all`). Workflows que necesiten más deben declararlo explícitamente con bloque `permissions:`.
-- **Justificación**: límite del blast radius de cualquier workflow comprometido o vulnerable a injection. Los reusables de `Cosmos.PlatformWorkflows` ya declaran sus permisos explícitamente.
+- **Justificación**: límite del blast radius de cualquier workflow comprometido o vulnerable a injection. Los reusables (en `Cosmos-SincoERP/.github`) ya declaran sus permisos explícitamente.
 
 #### D.5 — Allowed Actions allowlist
 - **Decisión**: Aplicar (org) — Fase 1.
@@ -286,7 +286,7 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 
 #### E.6 — Secret scanning en repos privados (mitigación open-source)
 - **Decisión**: Aplicar a nivel repo (vía reusable) — Fase 1.
-- **Configuración**: `_reusable-secret-scan.yml` en `Cosmos.PlatformWorkflows` corriendo **TruffleHog OSS** (`trufflesecurity/trufflehog`) con flag `--only-verified` sobre el diff del PR. Marcar como required en Ruleset de cada repo privado. Combinado con B.12 (push rulesets), cubre la brecha por falta de GHAS push protection.
+- **Configuración**: `_reusable-secret-scan.yml` en `Cosmos-SincoERP/.github` corriendo **TruffleHog OSS** (`trufflesecurity/trufflehog`) con flag `--only-verified` sobre el diff del PR. Marcar como required en Ruleset de cada repo privado. Combinado con B.12 (push rulesets), cubre la brecha por falta de GHAS push protection.
 - **Elección de herramienta**: TruffleHog OSS sobre gitleaks. `gitleaks-action@v2` requiere licencia comercial para organizaciones (verificado empíricamente 2026-05-26 al activar el reusable: *"[org] is an organization. License key is required."*). TruffleHog OSS es verified creator en Marketplace, sin licencia, mantenido activamente por TruffleSecurity. La flag `--only-verified` filtra falsos positivos validando los secrets con el provider (AWS, Azure, GitHub, etc.).
 - **Pinning**: TruffleHog no publica tag mayor móvil (`@v3` no existe, solo tags específicos `@v3.95.3`). Se pinea por SHA exacto con comentario de versión. Dependabot `github-actions` ecosystem mantiene la SHA actualizada.
 - **Justificación**: el riesgo de secretos filtrados es real; sin GHAS hay que cubrirlo. Reevaluar en [[0003]] al evaluar upgrade Enterprise.
@@ -320,7 +320,7 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 
 - Rol `Owner` en la organización Cosmos-SincoERP.
 - `gh` CLI autenticado (`gh auth status` verifica).
-- Acceso de escritura a `Cosmos.PlatformWorkflows` para nuevos reusables.
+- Acceso de escritura a `Cosmos-SincoERP/.github` para nuevos reusables (skills siguen en `Cosmos.AgentSkills`).
 
 ### Fase 0 — Crítico, esta semana
 
@@ -539,7 +539,7 @@ Commitear las plantillas en `Cosmos-SincoERP/.github/docs/templates/dependabot-*
 
 Cada repo copia (o el script de bootstrap copia automáticamente) la plantilla que aplique a su stack como `.github/dependabot.yml`.
 
-#### 16. Nuevos reusables en `Cosmos.PlatformWorkflows` (D.1, E.4, E.6)
+#### 16. Nuevos reusables en `Cosmos-SincoERP/.github` (D.1, E.4, E.6)
 
 Añadir a la rama `chore/bootstrap-plataforma`:
 
@@ -550,7 +550,7 @@ Documentar nombres de check uniformes para que sean referenciables desde Ruleset
 
 #### 17. Estandarizar concurrency control en reusables (D.8)
 
-Añadir bloque `concurrency:` a los reusables de `Cosmos.PlatformWorkflows` siguiendo la convención documentada.
+Añadir bloque `concurrency:` a los reusables de `Cosmos-SincoERP/.github` siguiendo la convención documentada.
 
 #### 18. Migración de pinning a SHA para acciones de terceros (D.3)
 
@@ -891,7 +891,7 @@ updates:
 
 #### `docs/templates/dependabot-github-actions.yml`
 
-Para repos que solo tienen workflows (como `Cosmos.PlatformWorkflows`):
+Para repos solo de workflows (caso histórico antes de la migración de mayo 2026):
 
 ```yaml
 version: 2
@@ -910,7 +910,7 @@ updates:
 
 ### A3 — Reusable workflows nuevos
 
-Estructura sugerida para añadir a `Cosmos-SincoERP/Cosmos.PlatformWorkflows/.github/workflows/`.
+Estructura sugerida para añadir a `Cosmos-SincoERP/.github/.github/workflows/`.
 
 #### `_reusable-dependency-review.yml`
 
@@ -1030,7 +1030,7 @@ echo "✓ $REPO listo"
 
 - [[0001]] — Marco de gobernanza y políticas de repositorios.
 - [[0003]] — Políticas para ambiente de producción.
-- `Cosmos-SincoERP/Cosmos.PlatformWorkflows` — workflows reutilizables.
+- `Cosmos-SincoERP/.github` — workflows reutilizables `_reusable-*.yml@v1` (migrados desde `Cosmos.PlatformWorkflows` en mayo 2026; ese repo se renombró a `Cosmos.AgentSkills` y conserva las skills de Claude).
 - `Cosmos-SincoERP/ObligacionesPorPagar.Radicacion` — piloto interno con branch protection.
 - [GitHub Docs — Organization Rulesets](https://docs.github.com/en/organizations/managing-organization-settings/managing-rulesets-for-repositories-in-your-organization)
 - [GitHub Docs — Push Rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#restrict-file-paths)

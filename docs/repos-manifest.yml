@@ -158,8 +158,8 @@ repos:
 # Cada entrada requiere `reason:` justificando.
 # ─────────────────────────────────────────────────────────────────
 skip:
-  - name: Cosmos.PlatformWorkflows
-    reason: "será renombrado a Cosmos.AgentSkills tras la migración; governance se redefine aparte"
+  - name: Cosmos.AgentSkills
+    reason: "ex-Cosmos.PlatformWorkflows, renombrado tras la migración de reusables; governance se redefine aparte (solo skills + tooling)"
 
   # Repos POC / bootcamp / archive-candidates
   - name: Bootcamp

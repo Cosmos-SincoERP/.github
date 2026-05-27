@@ -1,6 +1,6 @@
 # Workflows reusables — Plataforma CI/CD
 
-> **Migrado desde `Cosmos-SincoERP/Cosmos.PlatformWorkflows`** (ver ADR 0002 §D.7). Los reusables ahora viven en este repo `.github` org-wide. El repo origen mantiene sus skills de Claude (`onboard-dotnet-repo`, `provision-bc-infra`) y será renombrado a `Cosmos.AgentSkills`. Mientras la renombrada no ocurra, las referencias narrativas a "Cosmos.PlatformWorkflows" en este doc apuntan a esa locación histórica.
+> **Migrado desde `Cosmos-SincoERP/Cosmos.PlatformWorkflows`** (ver ADR 0002 §D.7), repo origen ya renombrado a `Cosmos-SincoERP/Cosmos.AgentSkills`. Los reusables viven ahora en este repo `.github` org-wide; el repo de skills conserva solo `onboard-dotnet-repo` y `provision-bc-infra` con sus templates.
 
 Este directorio contiene los **workflows reutilizables (`_reusable-*.yml`)** que componen la maquinaria compartida de CI/CD del ecosistema Cosmos. Todos los repos del plane (aplicativos, infraestructura, fronts) los consumen para tests, build y push de imágenes Docker, deploy a Swarm/Storage, y publicación NuGet.
 
@@ -553,7 +553,7 @@ Si un cambio te exige tocar la columna izquierda, es una decisión de plataforma
 
 ### Bounded contexts registrados
 
-> ⚠️ El catálogo declarativo y la skill de onboarding viven en `Cosmos-SincoERP/Cosmos.PlatformWorkflows` (a renombrar a `Cosmos.AgentSkills`), no en este repo. Esta tabla es **referencia humana duplicada**; la fuente de verdad está en `.claude/skills/onboard-dotnet-repo/bounded-contexts.yml` de ese otro repo. Sincronizar manualmente cuando se registre un BC nuevo.
+> ⚠️ El catálogo declarativo y la skill de onboarding viven en `Cosmos-SincoERP/Cosmos.AgentSkills`, no en este repo. Esta tabla es **referencia humana duplicada**; la fuente de verdad está en `.claude/skills/onboard-dotnet-repo/bounded-contexts.yml` de ese otro repo. Sincronizar manualmente cuando se registre un BC nuevo.
 
 | Key | Display name | Infra repo | ACR | Key Vault | Repo prefix | Swarm secret prefix | Buildx builder | Runner group (GitHub) | Networks Swarm |
 |---|---|---|---|---|---|---|---|---|---|
@@ -561,7 +561,7 @@ Si un cambio te exige tocar la columna izquierda, es una decisión de plataforma
 | `cont` | Contabilidad | `Cosmos-SincoERP/Cosmos.Contabilidad.Infraestructura` | `crcontdeveus2001` | `kv-cont-dev-eus2-001` | `cont` | `cont` | `cont-builder` | `swarm-deploy-cont` | `cont-public`, `cont-internal` |
 | `impu` | Impuestos | `Cosmos-SincoERP/Cosmos.Impuestos.Infraestructura` | `crimpudeveus2001` | `kv-impu-dev-eus2-001` | `impu` | `impu` | `impu-builder` | `swarm-deploy-impu` | `impu-public`, `impu-internal` |
 
-Para registrar un BC nuevo (Impuestos, Terceros, etc.): invocar la skill **`/provision-bc-infra`** desde el cwd del repo `Cosmos.PlatformWorkflows` (futuro `Cosmos.AgentSkills`). La skill clona el repo aplicativo del BC en read-only, detecta sus dependencias Azure (OpenAI, DocIntel, Storage Blobs, RabbitMQ, Postgres) por grep de PackageReferences y appsettings, propone los módulos Terraform a incluir/excluir, y orquesta end-to-end (gh repo create, scaffold mecánico, ediciones de TF según los hallazgos, bootstrap externo Azure, runner group org-level, push inicial de main, PR de validación del primer plan, y registro del BC en este catálogo) con confirmación explícita en cada paso costoso. Es idempotente: si el flujo se interrumpe, re-invocar la skill detecta el estado y propone retomar desde donde quedó.
+Para registrar un BC nuevo (Impuestos, Terceros, etc.): invocar la skill **`/provision-bc-infra`** desde el cwd del repo `Cosmos.AgentSkills`. La skill clona el repo aplicativo del BC en read-only, detecta sus dependencias Azure (OpenAI, DocIntel, Storage Blobs, RabbitMQ, Postgres) por grep de PackageReferences y appsettings, propone los módulos Terraform a incluir/excluir, y orquesta end-to-end (gh repo create, scaffold mecánico, ediciones de TF según los hallazgos, bootstrap externo Azure, runner group org-level, push inicial de main, PR de validación del primer plan, y registro del BC en este catálogo) con confirmación explícita en cada paso costoso. Es idempotente: si el flujo se interrumpe, re-invocar la skill detecta el estado y propone retomar desde donde quedó.
 
 Para hacerlo a mano (sin la skill), las piezas viven en `.claude/skills/provision-bc-infra/`:
 - `SKILL.md` — secuencia de pasos (sirve como referencia humana).
