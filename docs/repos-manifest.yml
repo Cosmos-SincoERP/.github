@@ -222,10 +222,6 @@ repos:
     stack: github-actions
     consumes: [reusables, dependabot]
 
-  - name: Analisis.ObligacionesPorPagar
-    stack: github-actions
-    consumes: [reusables, dependabot]
-
   - name: blog-ingenieria
     stack: github-actions
     consumes: [reusables, dependabot]
@@ -236,10 +232,6 @@ repos:
     stack: github-actions
     consumes: [reusables, dependabot]
 
-  - name: Plataforma
-    stack: github-actions
-    consumes: [reusables, dependabot]
-
   - name: erp-definiciones
     stack: github-actions
     consumes: [reusables, dependabot]
@@ -247,16 +239,6 @@ repos:
   - name: template-progressive-tdd-katas
     stack: github-actions
     consumes: [reusables, dependabot]
-
-  - name: Bootcamp
-    stack: github-actions
-    consumes: [reusables, dependabot]
-    # Repo de capacitación; baseline aplicado, sin pipeline productiva.
-
-  - name: CuentasPorPagar_Bootcamp
-    stack: github-actions
-    consumes: [reusables, dependabot]
-    # Repo de capacitación público.
 
 # ─────────────────────────────────────────────────────────────────
 # Opt-out explícito. Repos en la org que NO entran al sync.
