@@ -1,13 +1,19 @@
 # ─────────────────────────────────────────────────────────────────
 # Repos governed by the .github sync workflows.
 #
-# Source of truth: repos en la org Cosmos-SincoERP que consumen
+# Source of verdad: repos en la org Cosmos-SincoERP que consumen
 # `dependabot.yml` y/o `_reusable-*.yml` desde este repo.
 #
 # Editar este archivo es la forma de onboarding/offboarding del sync.
 # Stack determina cuál template de dependabot se propaga.
 # `consumes` permite opt-out parcial (ej. solo dependabot, sin reusables).
 # `overrides` permite personalización mínima documentada por repo.
+#
+# Overrides soportados:
+#   terraform_directory: string  — path del subdir con .tf (default "/")
+#   docker_directories:  list    — paths con Dockerfiles a trackear por
+#                                  Dependabot (genera un bloque docker en
+#                                  el dependabot.yml propagado)
 #
 # Ver Pieza 1 del plan: docs/adr/0002 §E.3 (managed sync).
 # ─────────────────────────────────────────────────────────────────
@@ -17,43 +23,73 @@ repos:
   - name: Cosmos.BuildingBlocks
     stack: dotnet
     consumes: [reusables, dependabot]
+    # Sin Dockerfiles: librería pura, no se containeriza.
 
   # ── ApplicationPlane (orquestador del plane) ────────────────────
   - name: ApplicationPlane
     stack: dotnet
     consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /src/Gateway/ApplicationPlane.Gateway
 
   # ── Contabilidad ────────────────────────────────────────────────
   - name: Cosmos.Contabilidad
     stack: dotnet
     consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /Cosmos.Contabilidad.Comandos.API
+        - /Cosmos.Contabilidad.Comandos.MCP.Server
+        - /Cosmos.Contabilidad.Consultas.API
+        - /Cosmos.Contabilidad.Consultas.MCP.Server
 
   - name: Cosmos.Contabilidad.Gateway
     stack: dotnet
     consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /
 
   - name: Cosmos.Contabilidad.Front
     stack: node-bun
     consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /
 
   - name: Cosmos.Contabilidad.Infraestructura
     stack: terraform
     consumes: [reusables, dependabot]
     overrides:
       terraform_directory: /infra
+      # Sin Dockerfiles: solo IaC.
 
   # ── Impuestos ───────────────────────────────────────────────────
   - name: Cosmos.Impuestos
     stack: dotnet
     consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /Cosmos.Impuestos.Comandos.API
+        - /Cosmos.Impuestos.Comandos.Grpc
+        - /Cosmos.Impuestos.Consultas.API
+        - /Cosmos.Impuestos.Consultas.Grpc
+        - /Cosmos.Impuestos.Seed
 
   - name: Cosmos.Impuestos.Gateway
     stack: dotnet
     consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /
 
   - name: Cosmos.Impuestos.Front
     stack: node-bun
     consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /
 
   - name: Cosmos.Impuestos.Infraestructura
     stack: terraform
@@ -65,14 +101,23 @@ repos:
   - name: ObligacionesPorPagar.Entradas
     stack: dotnet
     consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /ObligacionesPorPagar.Entradas.API
 
   - name: ObligacionesPorPagar.Gateway
     stack: dotnet
     consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /
 
   - name: ObligacionesPorPagar.Front
     stack: node-bun
     consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /
 
   - name: ObligacionesPorPagar.Infraestructura
     stack: terraform
@@ -83,14 +128,30 @@ repos:
   - name: ObligacionesPorPagar.Notificaciones
     stack: dotnet
     consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /ObligacionesPorPagar.Notificaciones.Server
 
   - name: ObligacionesPorPagar.Radicacion
     stack: dotnet
     consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /ObligacionesPorPagar.Radicacion.Comandos.API
+        - /ObligacionesPorPagar.Radicacion.Comandos.MCP.Server
+        - /ObligacionesPorPagar.Radicacion.Consultas.API
+        - /ObligacionesPorPagar.Radicacion.MCP.Server
+        - /ObligacionesPorPagar.Radicacion.PaymentPolling
 
   - name: ObligacionesPorPagar.Reconocimiento
     stack: dotnet
     consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /ObligacionesPorPagar.Reconocimiento.Comandos.API
+        - /ObligacionesPorPagar.Reconocimiento.Comandos.MCP.Server
+        - /ObligacionesPorPagar.Reconocimiento.Consultas.API
+        - /ObligacionesPorPagar.Reconocimiento.Consultas.MCP.Server
 
 # ─────────────────────────────────────────────────────────────────
 # Opt-out explícito. Repos en la org que NO entran al sync.

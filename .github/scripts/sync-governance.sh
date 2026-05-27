@@ -40,11 +40,13 @@ log()    { echo "[$(date +%H:%M:%S)] $*"; }
 fail()   { log "ERROR: $*" >&2; }
 section(){ echo; echo "═══ $* ═══"; }
 
-# Renderiza un template de dependabot con sustitución de tokens.
-# Args: stack, terraform_directory
+# Renderiza un template de dependabot con sustitución de tokens y, opcionalmente,
+# appendea un bloque docker con N directorios.
+# Args: stack, terraform_directory, docker_dirs_csv
 render_dependabot() {
   local stack="$1"
   local terraform_directory="${2:-/}"
+  local docker_dirs_csv="${3:-}"
   local template="$TEMPLATES_DIR/dependabot-$stack.yml"
 
   if [ ! -f "$template" ]; then
@@ -52,9 +54,29 @@ render_dependabot() {
     return 1
   fi
 
-  # Sustitución del único token soportado por ahora.
-  # Delimitador `#` (no `|`) porque el patrón contiene un `|` literal.
+  # Render base. Delimitador `#` (no `|`) porque el patrón contiene un `|` literal.
   sed "s#{{ terraform_directory | default('/') }}#$terraform_directory#g" "$template"
+
+  # Appendear bloque docker si hay docker_directories en overrides del manifest.
+  # Una sola entrada con `directories:` plural (Dependabot lo soporta desde 2024;
+  # más limpio que N entradas separadas).
+  if [ -n "$docker_dirs_csv" ]; then
+    printf '\n'
+    printf '  - package-ecosystem: "docker"\n'
+    printf '    directories:\n'
+    IFS=',' read -ra DOCKER_DIRS <<< "$docker_dirs_csv"
+    for d in "${DOCKER_DIRS[@]}"; do
+      printf '      - "%s"\n' "$d"
+    done
+    printf '    schedule:\n'
+    printf '      interval: "weekly"\n'
+    printf '      day: "wednesday"\n'
+    printf '    open-pull-requests-limit: 5\n'
+    printf '    groups:\n'
+    printf '      all:\n'
+    printf '        applies-to: version-updates\n'
+    printf '        patterns: ["*"]\n'
+  fi
 }
 
 # Obtiene el contenido actual de un archivo en un repo destino.
@@ -77,9 +99,9 @@ list_remote_workflows() {
 # ─── Lógica principal por repo ───────────────────────────────────────────────
 
 # Procesa un repo: detecta cambios necesarios y aplica si !DRY_RUN.
-# Args: name, stack, consumes (csv), terraform_directory
+# Args: name, stack, consumes (csv), terraform_directory, docker_dirs_csv
 process_repo() {
-  local name="$1" stack="$2" consumes="$3" terraform_directory="$4"
+  local name="$1" stack="$2" consumes="$3" terraform_directory="$4" docker_dirs_csv="${5:-}"
   local owner_repo="$ORG/$name"
 
   section "$owner_repo (stack=$stack, consumes=[$consumes])"
@@ -101,7 +123,7 @@ process_repo() {
   # ─ Cambio 1: dependabot.yml ──────────────────────────────────────────────
   if [[ ",$consumes," == *,dependabot,* ]] && [[ "$ONLY" == "all" || "$ONLY" == "dependabot" ]]; then
     local desired current
-    desired="$(render_dependabot "$stack" "$terraform_directory")" || { COUNT_FAILED+=1; FAILED_REPOS+=("$owner_repo (template error)"); return 0; }
+    desired="$(render_dependabot "$stack" "$terraform_directory" "$docker_dirs_csv")" || { COUNT_FAILED+=1; FAILED_REPOS+=("$owner_repo (template error)"); return 0; }
     current="$(fetch_remote_file "$owner_repo" ".github/dependabot.yml")"
 
     if [ "$desired" != "$current" ]; then
@@ -296,17 +318,18 @@ main() {
 
   # Iterar (uso process substitution para no perder vars por subshell)
   while IFS= read -r entry; do
-    local name stack consumes td
+    local name stack consumes td dd
     name="$(echo "$entry" | jq -r '.name')"
     stack="$(echo "$entry" | jq -r '.stack')"
     consumes="$(echo "$entry" | jq -r '.consumes | join(",")')"
     td="$(echo "$entry" | jq -r '.overrides.terraform_directory // "/"')"
+    dd="$(echo "$entry" | jq -r '.overrides.docker_directories // [] | join(",")')"
 
     if [ -n "$TARGET_REPO" ] && [ "$name" != "$TARGET_REPO" ]; then
       continue
     fi
 
-    process_repo "$name" "$stack" "$consumes" "$td" || true
+    process_repo "$name" "$stack" "$consumes" "$td" "$dd" || true
   done < <(echo "$repos_json" | jq -c '.[]')
 
   # Resumen
