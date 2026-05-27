@@ -1,9 +1,17 @@
+# ─────────────────────────────────────────────────────────────────
+# Managed by Cosmos-SincoERP/.github — do not edit manually in this repo.
+# Source: docs/templates/dependabot-terraform.yml in Cosmos-SincoERP/.github
+# Cambios locales se sobrescriben por el sync workflow.
+# Para personalizar: editar el template fuente o añadir override al manifest.
+# El token {{ terraform_directory }} se sustituye por el sync con el valor de
+# overrides.terraform_directory en el manifest (default: "/").
+# ─────────────────────────────────────────────────────────────────
 version: 2
 updates:
   # Ajustar `directory` al subdir donde viven los .tf (típicamente /infra,
   # /infraestructura, etc.). El default "/" rara vez aplica.
   - package-ecosystem: "terraform"
-    directory: "/"
+    directory: "{{ terraform_directory | default('/') }}"
     schedule:
       interval: "weekly"
       day: "thursday"

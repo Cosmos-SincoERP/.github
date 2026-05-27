@@ -1,0 +1,91 @@
+name: Tests Frontend (reusable)
+
+concurrency:
+  group: pr-${{ github.head_ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: "Directorio donde está el package.json."
+        type: string
+        required: false
+        default: "."
+      bun_version:
+        description: "Versión de Bun a instalar."
+        type: string
+        required: false
+        default: "latest"
+      run_lint:
+        description: "Ejecutar `bun run lint`."
+        type: boolean
+        required: false
+        default: true
+      run_test:
+        description: "Ejecutar `bun run test`."
+        type: boolean
+        required: false
+        default: true
+      run_build:
+        description: "Ejecutar `bun run build`."
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: bun lint / test / build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun ${{ inputs.bun_version }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ inputs.bun_version }}
+
+      - name: Cache de Bun
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles(format('{0}/bun.lock', inputs.working_directory), format('{0}/bun.lockb', inputs.working_directory)) }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        if: inputs.run_lint
+        run: bun run lint
+
+      - name: Test
+        if: inputs.run_test
+        run: bun run test
+
+      - name: Build
+        if: inputs.run_build
+        run: bun run build
+
+      - name: Resumen
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Tests Frontend (Bun)"
+            echo ""
+            echo "| Etapa | Ejecutada |"
+            echo "|---|---|"
+            echo "| Lint  | ${{ inputs.run_lint  && 'Sí' || 'No' }} |"
+            echo "| Test  | ${{ inputs.run_test  && 'Sí' || 'No' }} |"
+            echo "| Build | ${{ inputs.run_build && 'Sí' || 'No' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,405 @@
+name: Build & Push Docker (reusable)
+
+concurrency:
+  group: pr-${{ github.head_ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  workflow_call:
+    inputs:
+      images_json:
+        description: |
+          JSON array de imágenes a construir. Cada elemento debe tener:
+          - name: Nombre del repositorio en el ACR (sin prefijo). Ej: "radicacion-comandos-api".
+          - dockerfile: Ruta al Dockerfile (relativa al checkout).
+          - context: Contexto de build (relativa al checkout). Default: ".".
+        type: string
+        required: true
+      acr_name:
+        description: "Nombre del ACR (sin .azurecr.io)."
+        type: string
+        required: false
+        # Default histórico de OXP. Todo wrapper generado por la skill
+        # `onboard-dotnet-repo` versión bc-aware pasa este input via `with:`
+        # explícitamente desde el catálogo `bounded-contexts.yml`.
+        default: "croxpdeveus2001"
+      repository_prefix:
+        description: "Prefijo del repositorio en ACR. Las imágenes serán {acr}.azurecr.io/{prefix}/{name}:{tag}."
+        type: string
+        required: false
+        # Default histórico de OXP — ver nota en `acr_name`.
+        default: "oxp"
+      ref_context_override:
+        description: "Forzar el contexto del ref (si se omite, se calcula desde el evento: pr-{n}, main, manual)."
+        type: string
+        required: false
+        default: ""
+      mutable_alias_override:
+        description: |
+          Forzar el alias mutable adicional. Si se omite, se calcula:
+          pull_request → pr-{n}; push a main → main-latest; otros → ninguno.
+          Usa el valor literal "none" para deshabilitar el alias.
+        type: string
+        required: false
+        default: ""
+      buildx_builder_name:
+        description: |
+          Nombre del builder de buildx que se reutiliza entre ejecuciones.
+          En contextos multi-dominio sobre la misma VM, cada dominio debería
+          tener su propio builder para no compartir cache.
+        type: string
+        required: false
+        # Default histórico de OXP — ver nota en `acr_name`.
+        default: "oxp-builder"
+      runner_group:
+        description: |
+          Runner group de GitHub Actions donde correr el job de build/push
+          (ej. `swarm-deploy-appl`, `swarm-deploy-cont`). Cada caller debe
+          declarar el suyo: el reusable no asume ninguno porque los runners
+          self-hosted del plane comparten labels y el aislamiento por BC se
+          hace exclusivamente vía runner group (ver `bounded-contexts.yml`).
+        type: string
+        required: true
+    outputs:
+      ref_context:
+        description: |
+          Contexto del ref usado en los tags inmutables. `pr-{n}`, `main` o
+          `manual` salvo override.
+        value: ${{ jobs.resolver.outputs.ref_context }}
+      sha7:
+        description: |
+          Primeros 7 chars del SHA del commit cuyo build se pushó. Para
+          eventos `pull_request` es la HEAD del PR (no el merge-ref sintético
+          de GitHub); para `push`/`workflow_dispatch`/`schedule` es el commit
+          del ref.
+        value: ${{ jobs.resolver.outputs.sha7 }}
+      image_tags_json:
+        description: |
+          Mapa `{ "<name>": "<ref_context>-<sha7>" }` con el tag inmutable
+          publicado para cada imagen del input. Único source-of-truth de los
+          tags realmente pushados al ACR — los wrappers deben consumirlo en
+          lugar de recalcularlo.
+        value: ${{ jobs.resolver.outputs.image_tags_json }}
+
+permissions:
+  contents: read
+
+jobs:
+  resolver:
+    name: Resolver matriz y tags
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      images: ${{ steps.matrix.outputs.images }}
+      sha7: ${{ steps.tags.outputs.sha7 }}
+      ref_context: ${{ steps.tags.outputs.ref_context }}
+      mutable_alias: ${{ steps.tags.outputs.mutable_alias }}
+      image_tags_json: ${{ steps.tags.outputs.image_tags_json }}
+    steps:
+      - name: Validar y exponer matriz
+        id: matrix
+        shell: bash
+        env:
+          IMAGES_JSON: ${{ inputs.images_json }}
+        run: |
+          set -euo pipefail
+          if ! echo "$IMAGES_JSON" | jq empty 2>/dev/null; then
+            echo "::error::images_json no es JSON válido"
+            exit 1
+          fi
+          count=$(echo "$IMAGES_JSON" | jq 'length')
+          if [[ "$count" -eq 0 ]]; then
+            echo "::error::images_json está vacío"
+            exit 1
+          fi
+          # Compactar a una sola línea para el output
+          {
+            echo "images<<EOF"
+            echo "$IMAGES_JSON" | jq -c .
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Matriz: $count imagen(es)"
+
+      - name: Calcular tags
+        id: tags
+        shell: bash
+        env:
+          REF_OVERRIDE: ${{ inputs.ref_context_override }}
+          ALIAS_OVERRIDE: ${{ inputs.mutable_alias_override }}
+          IMAGES_JSON: ${{ inputs.images_json }}
+          # Para eventos `pull_request`, GITHUB_SHA es el merge-ref sintético
+          # que GitHub crea para previsualizar el merge — no la HEAD del PR
+          # ni un commit que exista en el repo. Como source-of-truth queremos
+          # la HEAD real del PR (lo que el dev pusheó, lo que aparece en
+          # `git log` y en el PR de GitHub), así que la inyectamos vía env
+          # y dejamos GITHUB_SHA solo para el resto de eventos.
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            sha="$PR_HEAD_SHA"
+          else
+            sha="$GITHUB_SHA"
+          fi
+          sha7="${sha:0:7}"
+
+          # Tratamos `workflow_dispatch` desde la default branch igual que un
+          # `push` a main: el deploy de main reusa este reusable y siempre
+          # arma `main-${sha7}` para el tag desplegable, así que los pushes
+          # del job docker deben quedar con el mismo prefijo. Lo mismo aplica
+          # a `schedule` (cron sobre main). Desde cualquier otra rama queda
+          # `manual` (o lo que pase el caller vía override).
+          default_branch_dispatch=false
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "schedule" ]] \
+             && [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            default_branch_dispatch=true
+          fi
+
+          ref_context="$REF_OVERRIDE"
+          if [[ -z "$ref_context" ]]; then
+            case "${{ github.event_name }}" in
+              pull_request)
+                ref_context="pr-${{ github.event.number }}"
+                ;;
+              push)
+                if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+                  ref_context="main"
+                else
+                  ref_context="manual"
+                fi
+                ;;
+              *)
+                if [[ "$default_branch_dispatch" == "true" ]]; then
+                  ref_context="main"
+                else
+                  ref_context="manual"
+                fi
+                ;;
+            esac
+          fi
+
+          mutable_alias="$ALIAS_OVERRIDE"
+          if [[ -z "$mutable_alias" ]]; then
+            case "${{ github.event_name }}" in
+              pull_request)
+                mutable_alias="pr-${{ github.event.number }}"
+                ;;
+              push)
+                if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+                  mutable_alias="main-latest"
+                else
+                  mutable_alias="none"
+                fi
+                ;;
+              *)
+                if [[ "$default_branch_dispatch" == "true" ]]; then
+                  mutable_alias="main-latest"
+                else
+                  mutable_alias="none"
+                fi
+                ;;
+            esac
+          fi
+
+          # Mapa {name: "<ref_context>-<sha7>"} construido aquí, en el único
+          # punto donde conocemos `images_json + ref_context + sha7`. Esto es
+          # lo que se pushea al ACR y lo que los consumidores río abajo
+          # (manifest del PR, comentario al PR, deploy a main) deben usar
+          # tal cual sin recalcular.
+          immutable_tag="${ref_context}-${sha7}"
+          image_tags_json=$(echo "$IMAGES_JSON" | jq -c --arg t "$immutable_tag" \
+            '[.[] | {key: .name, value: $t}] | from_entries')
+
+          {
+            echo "sha7=$sha7"
+            echo "ref_context=$ref_context"
+            echo "mutable_alias=$mutable_alias"
+            echo "image_tags_json=$image_tags_json"
+          } >> "$GITHUB_OUTPUT"
+          echo "Tag inmutable: ${immutable_tag}"
+          echo "Alias mutable: ${mutable_alias}"
+          echo "image_tags_json: ${image_tags_json}"
+
+  publish:
+    name: Build & push ${{ matrix.image.name }}
+    needs: resolver
+    runs-on:
+      group: ${{ inputs.runner_group }}
+      labels: [self-hosted, azure, swarm-deploy]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.resolver.outputs.images) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Para `pull_request` queremos buildear exactamente el commit HEAD
+          # del PR (el que el dev pusheó), no la merge-ref sintética que
+          # GitHub provee por default. Así el SHA del checkout coincide con
+          # el SHA que el resolver puso en el tag inmutable.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Login al ACR (Managed Identity)
+        shell: bash
+        env:
+          ACR: ${{ inputs.acr_name }}
+        run: |
+          set -euo pipefail
+          az login --identity --output none
+          az acr login --name "$ACR"
+
+      - name: Asegurar buildx disponible
+        shell: bash
+        env:
+          BUILDER: ${{ inputs.buildx_builder_name }}
+        run: |
+          set -euo pipefail
+          if ! docker buildx inspect "$BUILDER" >/dev/null 2>&1; then
+            docker buildx create --name "$BUILDER" --use --driver docker-container >/dev/null
+          else
+            docker buildx use "$BUILDER"
+          fi
+          docker buildx inspect --bootstrap >/dev/null
+
+      - name: Build & push
+        id: build
+        shell: bash
+        env:
+          ACR: ${{ inputs.acr_name }}
+          PREFIX: ${{ inputs.repository_prefix }}
+          NAME: ${{ matrix.image.name }}
+          DOCKERFILE: ${{ matrix.image.dockerfile }}
+          CONTEXT: ${{ matrix.image.context || '.' }}
+          REF_CONTEXT: ${{ needs.resolver.outputs.ref_context }}
+          SHA7: ${{ needs.resolver.outputs.sha7 }}
+          ALIAS: ${{ needs.resolver.outputs.mutable_alias }}
+          # Usamos el SHA real (HEAD del PR o ref del push) como label OCI
+          # para que `docker inspect` apunte al commit que el dev pusheó.
+          REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          DOCKER_BUILDKIT: "1"
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$DOCKERFILE" ]]; then
+            echo "::error::Dockerfile no encontrado: $DOCKERFILE"
+            exit 1
+          fi
+
+          repo="${ACR}.azurecr.io/${PREFIX}/${NAME}"
+          immutable_tag="${repo}:${REF_CONTEXT}-${SHA7}"
+          buildcache_ref="${repo}:buildcache"
+
+          tag_args=(--tag "$immutable_tag")
+          if [[ "$ALIAS" != "none" && -n "$ALIAS" ]]; then
+            alias_tag="${repo}:${ALIAS}"
+            tag_args+=(--tag "$alias_tag")
+          fi
+
+          # Etiquetas OCI estándar para trazabilidad.
+          label_args=(
+            --label "org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}"
+            --label "org.opencontainers.image.revision=${REVISION}"
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          )
+
+          echo "Construyendo $immutable_tag desde $DOCKERFILE en contexto $CONTEXT"
+          docker buildx build \
+            --file "$DOCKERFILE" \
+            "${label_args[@]}" \
+            "${tag_args[@]}" \
+            --cache-from "type=registry,ref=${buildcache_ref}" \
+            --cache-to "type=registry,ref=${buildcache_ref},mode=max,image-manifest=true" \
+            --push \
+            "$CONTEXT"
+
+          if [[ "$ALIAS" != "none" && -n "$ALIAS" ]]; then
+            echo "alias_tag=${repo}:${ALIAS}" >> "$GITHUB_OUTPUT"
+          fi
+          echo "immutable_tag=$immutable_tag" >> "$GITHUB_OUTPUT"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+
+      - name: Resumen por imagen
+        if: always()
+        shell: bash
+        env:
+          NAME: ${{ matrix.image.name }}
+          IMMUTABLE: ${{ steps.build.outputs.immutable_tag }}
+          ALIAS_TAG: ${{ steps.build.outputs.alias_tag }}
+          REPO: ${{ steps.build.outputs.repo }}
+        run: |
+          {
+            echo "### Imagen \`$NAME\`"
+            echo ""
+            echo "| Tipo | Tag |"
+            echo "|---|---|"
+            if [[ -n "$IMMUTABLE" ]]; then
+              echo "| Inmutable | \`$IMMUTABLE\` |"
+            fi
+            if [[ -n "$ALIAS_TAG" ]]; then
+              echo "| Alias mutable | \`$ALIAS_TAG\` |"
+            fi
+            if [[ -n "$REPO" ]]; then
+              echo ""
+              echo "Pull local:"
+              echo ""
+              echo "\`\`\`"
+              echo "az acr login -n ${{ inputs.acr_name }}"
+              [[ -n "$IMMUTABLE" ]] && echo "docker pull $IMMUTABLE"
+              [[ -n "$ALIAS_TAG" ]] && echo "docker pull $ALIAS_TAG"
+              echo "\`\`\`"
+            fi
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publicar-manifest:
+    # Persistimos qué imágenes/tags publicó este PR run para que el deploy a
+    # main pueda promover (`docker pull pr-N-sha7 → tag main-mergesha → push`)
+    # sin recalcular tags ni rebuildear. La responsabilidad vive aquí — en el
+    # mismo workflow que conoce el SHA y el ref_context que se usaron al
+    # taguear — para evitar que un wrapper río arriba derive un tag distinto.
+    name: Publicar manifest del PR
+    needs: [resolver, publish]
+    if: ${{ github.event_name == 'pull_request' && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Construir manifest
+        shell: bash
+        env:
+          IMAGES_JSON: ${{ inputs.images_json }}
+          IMAGE_TAGS_JSON: ${{ needs.resolver.outputs.image_tags_json }}
+          REF_CONTEXT: ${{ needs.resolver.outputs.ref_context }}
+          SHA7: ${{ needs.resolver.outputs.sha7 }}
+          PR_NUMBER: ${{ github.event.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          manifest=$(jq -n \
+            --argjson pr_number "$PR_NUMBER" \
+            --arg head_sha "$HEAD_SHA" \
+            --arg head_sha7 "$SHA7" \
+            --arg ref_context "$REF_CONTEXT" \
+            --argjson image_tags_json "$IMAGE_TAGS_JSON" \
+            --argjson images_json "$IMAGES_JSON" \
+            '{
+              pr_number: $pr_number,
+              head_sha: $head_sha,
+              head_sha7: $head_sha7,
+              ref_context: $ref_context,
+              image_tags_json: $image_tags_json,
+              images_json: $images_json
+            }')
+
+          mkdir -p manifest
+          echo "$manifest" > manifest/manifest.json
+          echo "Manifest:"
+          echo "$manifest" | jq .
+
+      - name: Subir artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr-${{ github.event.number }}-images-manifest
+          path: manifest/manifest.json
+          retention-days: 90
+          if-no-files-found: error

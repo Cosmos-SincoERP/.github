@@ -1,0 +1,55 @@
+name: Dependency Review (trivy)
+
+# Reusable que escanea dependencias del repo consumidor en busca de
+# vulnerabilidades CVE usando Trivy OSS (Aqua Security). Reemplaza al
+# antiguo `actions/dependency-review-action`, que requiere GitHub Advanced
+# Security en repos privados — feature solo disponible en plan Enterprise.
+# Referencia: ADR 0002 decisión E.4 (apéndice A3).
+#
+# Trivy es verified creator en GitHub Marketplace, no requiere licencia y
+# escanea filesystem detectando lockfiles y manifests (nuget, npm, pip,
+# go.mod, Cargo.toml, Gemfile.lock, etc.) además de Dockerfiles y IaC.
+#
+# Pinning por SHA exacto porque Trivy no publica tag mayor móvil (`@v0` no
+# existe, solo tags específicos como `@v0.36.0`). Dependabot github-actions
+# ecosystem mantiene la SHA actualizada.
+
+on:
+  workflow_call:
+    inputs:
+      severity:
+        description: "Severidades que rompen el build (CSV: LOW,MEDIUM,HIGH,CRITICAL)."
+        type: string
+        default: "HIGH,CRITICAL"
+      scan-type:
+        description: "Tipo de escaneo: fs (filesystem, default) | image | repo."
+        type: string
+        default: "fs"
+      ignore-unfixed:
+        description: "Ignorar vulnerabilidades sin fix disponible upstream."
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Sin `concurrency:` a nivel workflow: cuando un caller invoca dependency-review
+# y secret-scan como jobs paralelos del mismo workflow caller, github.job es
+# `null` a nivel workflow (no se evalúa fuera de un step). Eso producía groups
+# idénticos entre los 2 reusables y se cancelaban entre sí. Como este check es
+# read-only y rápido, no necesita cancel-in-progress.
+
+jobs:
+  trivy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6 # GitHub-owned → tag mayor (D.3)
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: ${{ inputs.scan-type }}
+          severity: ${{ inputs.severity }}
+          ignore-unfixed: ${{ inputs.ignore-unfixed }}
+          exit-code: "1"
+          format: table
+          scanners: vuln

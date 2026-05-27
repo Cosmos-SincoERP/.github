@@ -1,0 +1,99 @@
+name: NuGet publish (reusable)
+
+concurrency:
+  group: deploy-${{ github.workflow }}-${{ inputs.environment || 'default' }}
+  cancel-in-progress: false
+
+on:
+  workflow_call:
+    inputs:
+      project_path:
+        description: "Ruta al .csproj a empaquetar (relativa al checkout). Ej: src/Foo.Contratos/Foo.Contratos.csproj"
+        type: string
+        required: true
+      package_version:
+        description: "SemVer del paquete (sin 'v'). Ej: 1.2.3"
+        type: string
+        required: true
+      dotnet_version:
+        description: "Versión del SDK .NET para el setup-dotnet."
+        type: string
+        required: false
+        default: "10.0.x"
+      nuget_source:
+        description: "Feed destino. Default nuget.org."
+        type: string
+        required: false
+        default: "https://api.nuget.org/v3/index.json"
+    secrets:
+      NUGET_API_KEY:
+        description: "API key con permiso de push al feed."
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Pack & push
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Pack
+        shell: bash
+        env:
+          PROJECT: ${{ inputs.project_path }}
+          VERSION: ${{ inputs.package_version }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$PROJECT" ]]; then
+            echo "::error::Proyecto no encontrado: $PROJECT"
+            exit 1
+          fi
+          dotnet pack "$PROJECT" \
+            -c Release \
+            -p:PackageVersion="$VERSION" \
+            -o ./nupkgs
+
+      - name: Push
+        shell: bash
+        env:
+          NUGET_SOURCE: ${{ inputs.nuget_source }}
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(./nupkgs/*.nupkg)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "::error::No se generaron .nupkg en ./nupkgs"
+            exit 1
+          fi
+          for pkg in "${files[@]}"; do
+            echo "  Push: $pkg"
+            dotnet nuget push "$pkg" \
+              --api-key "$NUGET_API_KEY" \
+              --source "$NUGET_SOURCE" \
+              --skip-duplicate
+          done
+
+      - name: Resumen
+        if: always()
+        shell: bash
+        env:
+          PROJECT: ${{ inputs.project_path }}
+          VERSION: ${{ inputs.package_version }}
+          SOURCE: ${{ inputs.nuget_source }}
+        run: |
+          {
+            echo "## NuGet publish"
+            echo ""
+            echo "- Proyecto: \`$PROJECT\`"
+            echo "- Versión: \`$VERSION\`"
+            echo "- Feed: \`$SOURCE\`"
+          } >> "$GITHUB_STEP_SUMMARY"

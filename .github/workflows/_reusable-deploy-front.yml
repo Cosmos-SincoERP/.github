@@ -1,0 +1,435 @@
+name: Deploy Front estático (reusable)
+
+concurrency:
+  group: deploy-${{ github.workflow }}-${{ inputs.environment || 'default' }}
+  cancel-in-progress: false
+
+# Despliega un SPA construido con Bun a un Storage Account static website
+# siguiendo el patrón "build once, deploy anywhere":
+#   - Bundle inmutable subido a $web/<app_name>/releases/<sha>/ con Cache-Control
+#     immutable. El prefijo `<app_name>/` permite hospedar varios fronts en el
+#     mismo Storage Account (un SA compartido por proyecto).
+#   - env.js (config runtime) generado desde KV y subido a $web/<app_name>/env.js
+#     con no-cache.
+#   - Activación atómica: copia server-side de <app_name>/releases/<sha>/index.html
+#     a $web/<app_name>/index.html (los usuarios ven la nueva versión en la
+#     siguiente request, sin estado intermedio).
+#   - Smoke test contra el web_endpoint que pasa el caller (ya incluye `/<app_name>/`).
+#
+# Plantilla del env.js: vive en el repo del **front** en `.deploy/env.js.tmpl`.
+# El reusable es agnóstico al shape — extrae los placeholders `${VAR_NAME}`
+# del template y deriva el nombre del secret en KV por convención:
+#     `${FOO_BAR}` → `front-<app_name>-foo-bar`  (lowercase, `_` → `-`)
+# Escape hatch: `.deploy/env.map` opcional en el repo del front, formato
+# `VAR=secret-name` por línea, soporta comentarios `#`. Permite mapear una
+# var a un secret con nombre custom (ej. uno compartido entre fronts).
+# Una vez generado, se valida con `node --check` (si hay Node disponible).
+#
+# Estructura: split en dos jobs por capacidad del runner.
+#   - `build` corre en `ubuntu-latest` (GitHub-hosted) porque setup-bun
+#     necesita `unzip` y otras herramientas de imagen full que la VM del
+#     runner self-hosted (imagen mínima) no tiene. Hosted hace bun install,
+#     build con VITE_RELEASE_BASE, test, y sube `dist/` + `.deploy/` como
+#     artefacto.
+#   - `deploy` corre en `[self-hosted, azure, swarm-deploy]` porque la
+#     única razón de exigir self-hosted es la Managed Identity de la VM
+#     (data plane Azure: KV + Storage). Descarga el artefacto del build,
+#     hace `az login --identity` y ejecuta los pasos de upload + swap.
+# Esta separación deja al self-hosted con un único requisito (`az` CLI,
+# que ya está vía Radicacion); no necesita Bun, unzip, envsubst, ni node.
+#
+# Auth: Managed Identity del runner self-hosted (label `swarm-deploy`).
+# Primer step del job `deploy`: `az login --identity`. La MI del runner debe tener:
+#   - `Storage Blob Data Contributor` sobre la SA del front. Lo provisiona
+#     el módulo TF `cosmos_front_app` cuando se le pasa la MI del runner
+#     como `principal_id`. ⚠️ Verificación pendiente: hoy el módulo se lo
+#     asigna a `data.azurerm_client_config.current.object_id` (= SP de
+#     tfops que aplica TF), no a la MI del runner. Para el primer deploy,
+#     o se extiende el módulo aceptando `vm_principal_id` como input, o
+#     se asigna manualmente con `az role assignment create` (ver §5b paso
+#     2 del workflows README).
+#   - `Key Vault Secrets User` sobre el KV de environment. Lo otorga
+#     `module.key_vault.vm_secrets_user` (ya cubierto desde Radicacion).
+# Alineado con `_reusable-deploy-swarm.yml` y `_reusable-cleanup-acr-pr.yml`.
+# NO hay OIDC, NO hay federated credentials, NO hay GH Actions secrets de Azure.
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: |
+          Identificador corto del front (alfanumérico minúscula, 2-8 chars).
+          Se usa para nombrar los secrets en Key Vault (`front-<app>-...`)
+          y como prefijo de path en `$web/<app_name>/...`. Ej: 'oxp', 'crm'.
+        type: string
+        required: true
+      environment:
+        description: "Ambiente lógico (dev, qa, prod). Solo usado para etiquetas/diagnóstico — el ambiente real lo determina la SA y el KV."
+        type: string
+        required: true
+      storage_account_name:
+        description: |
+          Nombre del Storage Account (output `front_<app>_account_name` del
+          módulo TF `cosmos_front_app`). Convención: stfe<project><env><region>001.
+          Ej: stfeoxpdeveus2001.
+        type: string
+        required: true
+      web_endpoint:
+        description: |
+          URL completa donde el front quedará servido (incluye el prefijo
+          `<app_name>/`). Se usa para el smoke test post-deploy.
+          Ej: https://stfeoxpdeveus2001.z20.web.core.windows.net/oxp/
+        type: string
+        required: true
+      key_vault_name:
+        description: |
+          Nombre del Key Vault desde donde leer los secretos de configuración
+          que se inyectan en `env.js`. Convención CAF: `kv-<project>-<env>-<region>-<instance>`.
+          Sin default: cada caller lo pasa explícitamente para evitar acoplar
+          el reusable a un ambiente concreto.
+        type: string
+        required: true
+      bun_version:
+        description: "Versión de Bun a instalar en el runner del build."
+        type: string
+        required: false
+        default: "latest"
+      working_directory:
+        description: "Directorio donde está el package.json del front."
+        type: string
+        required: false
+        default: "."
+      runner_group:
+        description: |
+          Runner group de GitHub Actions donde correr el job `deploy`
+          (ej. `swarm-deploy-appl`, `swarm-deploy-cont`). Cada caller debe
+          declarar el suyo: el reusable no asume ninguno porque los runners
+          self-hosted del plane comparten labels y el aislamiento por BC se
+          hace exclusivamente vía runner group (ver `bounded-contexts.yml`).
+        type: string
+        required: true
+
+# La auth a Azure es por Managed Identity de la VM (no OIDC), así que no se
+# necesita `id-token: write`. Solo `contents: read` para `actions/checkout`.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ inputs.app_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout código del front
+        uses: actions/checkout@v6
+
+      - name: Setup Bun ${{ inputs.bun_version }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ inputs.bun_version }}
+
+      - name: Cache de dependencias Bun
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles(format('{0}/bun.lock', inputs.working_directory)) }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Build (VITE_RELEASE_BASE = /<app_name>/releases/<sha>/)
+        env:
+          # base path del bundle inmutable. Vite prefija con esto todos los
+          # assets emitidos en `dist/`, lo que permite servir múltiples
+          # releases simultáneos bajo un mismo origen y varios fronts bajo
+          # el mismo Storage Account.
+          VITE_RELEASE_BASE: /${{ inputs.app_name }}/releases/${{ github.sha }}/
+          # base path del front (sin SHA). Lo usa el plugin de Vite que
+          # reescribe el `<script src=".../env.js">` del index.html para
+          # que apunte a `/<app_name>/env.js` (que se sube por separado a
+          # la raíz del prefijo del front, fuera del bundle inmutable).
+          VITE_APP_BASE: /${{ inputs.app_name }}/
+        run: bun run build
+
+      - name: Test
+        run: bun run test
+
+      - name: Subir artefactos del build (dist + .deploy)
+        # `dist/` es lo que se publicará a `$web/<app_name>/releases/<sha>/`.
+        # `.deploy/` lleva el `env.js.tmpl` (y opcionalmente `env.map`) que
+        # el job de deploy usa para generar el `env.js` runtime desde KV.
+        # Retención corta: el artefacto sólo viaja entre los dos jobs del
+        # mismo run; las versiones inmutables ya quedan en Storage.
+        #
+        # `include-hidden-files: true` es CRÍTICO: el directorio `.deploy/`
+        # empieza con `.` y `actions/upload-artifact@v6` lo excluiría como
+        # "hidden" por default, dejando el artefacto sin la plantilla. El
+        # runner self-hosted vería entonces un `.deploy/env.js.tmpl` stale
+        # de un run anterior (el download no lo sobreescribe si no estaba
+        # en el artefacto), causando substituciones con valores viejos.
+        uses: actions/upload-artifact@v7
+        with:
+          name: front-build-${{ github.sha }}
+          path: |
+            ${{ inputs.working_directory }}/dist
+            ${{ inputs.working_directory }}/.deploy
+          retention-days: 1
+          if-no-files-found: error
+          include-hidden-files: true
+
+  deploy:
+    name: Deploy ${{ inputs.app_name }} (${{ inputs.environment }})
+    needs: build
+    # Self-hosted con MI: necesario sólo para los pasos `az` que tocan
+    # KV y Storage. NO corre Bun ni hace builds — sólo data plane Azure.
+    runs-on:
+      group: ${{ inputs.runner_group }}
+      labels: [self-hosted, azure, swarm-deploy]
+    timeout-minutes: 15
+    steps:
+      - name: Limpiar workspace del runner (evita stale state)
+        # El runner self-hosted reusa el mismo workspace entre runs. Sin esto,
+        # un `.deploy/env.js.tmpl` o un `dist/` de un run anterior se mezcla
+        # con el download del artefacto actual (download-artifact no borra lo
+        # que no viene en el artefacto). Pasó: tras quitar `${API_BASE_URL}`
+        # de la plantilla, el runner siguió leyendo el viejo y buscando un
+        # secret que ya no existe.
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .deploy dist env.js
+
+      - name: Descargar artefactos del build
+        uses: actions/download-artifact@v8
+        with:
+          name: front-build-${{ github.sha }}
+          path: .
+
+      - name: Login a Azure (Managed Identity del runner)
+        shell: bash
+        run: |
+          set -euo pipefail
+          az login --identity --output none
+
+      - name: Subir release inmutable a $web/<app_name>/releases/<sha>/
+        shell: bash
+        env:
+          STORAGE: ${{ inputs.storage_account_name }}
+        run: |
+          set -euo pipefail
+          # `--overwrite false` garantiza inmutabilidad: si el SHA ya existe
+          # (re-run del job), falla en vez de pisar bytes ya servidos.
+          # Cache-Control 1 año + immutable porque cada asset lleva el SHA en
+          # la URL; nunca cambia bajo el mismo path.
+          # `'$web'` con comillas simples es intencional: es el nombre literal
+          # del contenedor de static website en Azure Storage (incluye `$`).
+          # shellcheck disable=SC2016
+          az storage blob upload-batch \
+            --account-name "$STORAGE" \
+            --auth-mode login \
+            --destination '$web/${{ inputs.app_name }}/releases/${{ github.sha }}' \
+            --source dist \
+            --content-cache-control "public, max-age=31536000, immutable" \
+            --overwrite false \
+            --no-progress
+
+      - name: Generar env.js desde Key Vault (template del front + convención)
+        shell: bash
+        env:
+          KV: ${{ inputs.key_vault_name }}
+          APP: ${{ inputs.app_name }}
+          TEMPLATE: .deploy/env.js.tmpl
+          MAP: .deploy/env.map
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "$TEMPLATE" ]]; then
+            echo "::error::Plantilla no encontrada en $TEMPLATE."
+            echo "::error::Cada front debe declarar su propio .deploy/env.js.tmpl con los placeholders \${VAR_NAME}."
+            exit 1
+          fi
+
+          # Extraer placeholders del template (formato ${FOO_BAR}: mayúsculas,
+          # dígitos, _; primer char no-dígito). El sort -u dedupe placeholders
+          # repetidos en el template. El regex va entre comillas simples a
+          # propósito (es un patrón literal para grep, no expansión de bash).
+          # shellcheck disable=SC2016
+          mapfile -t VARS < <(grep -oE '\$\{[A-Z_][A-Z0-9_]*\}' "$TEMPLATE" | tr -d '${}' | sort -u)
+
+          if [[ ${#VARS[@]} -eq 0 ]]; then
+            echo "::warning::No se encontraron placeholders \${VAR_NAME} en $TEMPLATE; el env.js se subirá como copia literal del template."
+          fi
+
+          # Cargar override map (opcional). Formato: VAR=secret-name por línea,
+          # # comentarios, líneas vacías ignoradas. Permite mapear una var del
+          # template a un nombre de secret distinto del que daría la convención
+          # (ej. para reusar un secret compartido entre fronts).
+          declare -A OVERRIDE=()
+          if [[ -f "$MAP" ]]; then
+            while IFS='=' read -r raw_k raw_v; do
+              k="${raw_k// /}"; v="${raw_v// /}"
+              [[ "$k" =~ ^# ]] && continue
+              [[ -z "$k" ]] && continue
+              OVERRIDE[$k]="$v"
+            done < "$MAP"
+            echo "Override map cargado de $MAP: ${#OVERRIDE[@]} entradas."
+          fi
+
+          # Sustitución pura en bash (sin envsubst): cargamos el contenido del
+          # template y reemplazamos cada `${VAR}` con su valor leído de KV.
+          # Usa `${var//pattern/replacement}`, que es match literal (no glob
+          # porque los placeholders no contienen `*`/`?`/`[`) y replacement
+          # literal (no re-expande `$` del valor). Ventaja sobre envsubst:
+          # cero dependencias del runner además de bash + az.
+          RESULT=$(<"$TEMPLATE")
+          for var in "${VARS[@]}"; do
+            if [[ -n "${OVERRIDE[$var]:-}" ]]; then
+              secret_name="${OVERRIDE[$var]}"
+              echo "  $var → $secret_name (override)"
+            else
+              # Convención: VAR_NAME → front-<app>-var-name
+              kebab=$(echo "$var" | tr '[:upper:]_' '[:lower:]-')
+              secret_name="front-${APP}-${kebab}"
+              echo "  $var → $secret_name (convención)"
+            fi
+            value=$(az keyvault secret show \
+              --vault-name "$KV" --name "$secret_name" \
+              --query value -o tsv)
+            # `\$\{$var\}` escapa `$` y `{}` para que el match sea el literal
+            # `${VAR_NAME}` y no un glob.
+            RESULT="${RESULT//\$\{$var\}/$value}"
+          done
+
+          printf '%s' "$RESULT" > env.js
+
+          # Validación de sintaxis: atrapa típos del template (ej. un valor no
+          # numérico que rompe un literal sin comillas como autoSaveIntervalMs).
+          # Soft-requirement: si node no está en el runner, se omite el check
+          # con warning en vez de fallar el job.
+          if command -v node >/dev/null 2>&1; then
+            node --check env.js || { echo "::error::env.js generado no es JS válido"; exit 1; }
+          else
+            echo "::warning::node no disponible en el runner; se omite la validación de sintaxis del env.js."
+          fi
+
+          echo "env.js generado (${#VARS[@]} variables substituidas):"
+          # Ofusca valores literales en el log (cualquier "..." → "<oculto>")
+          # para no filtrar URLs/tokens al output del job.
+          sed 's|"\([^"]*\)"|"<oculto>"|g' env.js
+
+      - name: Subir env.js a $web/<app_name>/env.js (no-cache)
+        shell: bash
+        env:
+          STORAGE: ${{ inputs.storage_account_name }}
+        run: |
+          set -euo pipefail
+          # `'$web'` con comillas simples es intencional (nombre literal del
+          # contenedor de static website).
+          # shellcheck disable=SC2016
+          az storage blob upload \
+            --account-name "$STORAGE" \
+            --auth-mode login \
+            --container-name '$web' \
+            --name '${{ inputs.app_name }}/env.js' \
+            --file env.js \
+            --content-cache-control "no-cache" \
+            --content-type "application/javascript; charset=utf-8" \
+            --overwrite true \
+            --no-progress
+
+      - name: Activación atómica — swap de index.html
+        shell: bash
+        env:
+          STORAGE: ${{ inputs.storage_account_name }}
+        run: |
+          set -euo pipefail
+
+          # `'$web'` con comillas simples es el nombre literal del contenedor
+          # de static website (Azure usa `$` en el nombre). Aplica a todos
+          # los `az storage blob ...` de este step.
+
+          # Copy server-side dentro del mismo Storage Account: el cliente que
+          # pida `/<app_name>/` o `/<app_name>/index.html` ve la versión vieja
+          # o la nueva, nunca un estado intermedio.
+          # shellcheck disable=SC2016
+          az storage blob copy start \
+            --account-name "$STORAGE" \
+            --auth-mode login \
+            --source-container '$web' \
+            --source-blob "${{ inputs.app_name }}/releases/${{ github.sha }}/index.html" \
+            --destination-container '$web' \
+            --destination-blob '${{ inputs.app_name }}/index.html' \
+            --output none
+
+          # Poll de la copia (típicamente sub-segundo intra-account, pero el
+          # API es async y el `update` siguiente fallaría si la copia aún
+          # está pending). Tope de 30s, suficiente para un index.html chico.
+          status=""
+          for _ in $(seq 1 30); do
+            # shellcheck disable=SC2016
+            status=$(az storage blob show \
+              --account-name "$STORAGE" --auth-mode login \
+              --container-name '$web' --name '${{ inputs.app_name }}/index.html' \
+              --query 'properties.copy.status' -o tsv)
+            case "$status" in
+              success) break ;;
+              pending) sleep 1 ;;
+              *) echo "::error::Copia de index.html en estado inesperado: $status"; exit 1 ;;
+            esac
+          done
+          if [[ "$status" != "success" ]]; then
+            echo "::error::La copia de index.html no completó en 30s (último estado: $status)."
+            exit 1
+          fi
+
+          # `az storage blob copy` preserva las propiedades de origen (en este
+          # caso Cache-Control: immutable). Lo sobrescribimos para que la
+          # entrada del front nunca se cachee — es el switch que activa cada
+          # release.
+          # shellcheck disable=SC2016
+          az storage blob update \
+            --account-name "$STORAGE" \
+            --auth-mode login \
+            --container-name '$web' \
+            --name '${{ inputs.app_name }}/index.html' \
+            --content-cache-control "no-cache" \
+            --content-type "text/html; charset=utf-8" \
+            --output none
+
+      - name: Smoke test
+        shell: bash
+        env:
+          ENDPOINT: ${{ inputs.web_endpoint }}
+        run: |
+          set -euo pipefail
+          # `-f` rompe si el HTTP code es >=400. Útil para detectar que el
+          # static website siga sirviendo y que index.html exista.
+          curl -fsSL "$ENDPOINT" -o /dev/null
+          echo "Smoke test OK contra $ENDPOINT"
+
+      - name: Resumen
+        if: always()
+        shell: bash
+        env:
+          APP: ${{ inputs.app_name }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          STORAGE: ${{ inputs.storage_account_name }}
+          ENDPOINT: ${{ inputs.web_endpoint }}
+          KV: ${{ inputs.key_vault_name }}
+        run: |
+          {
+            echo "## Deploy front — \`$APP\` (\`$ENVIRONMENT\`)"
+            echo ""
+            echo "| Campo | Valor |"
+            echo "|---|---|"
+            echo "| Storage Account | \`$STORAGE\` |"
+            echo "| Endpoint | $ENDPOINT |"
+            echo "| Release SHA | \`${{ github.sha }}\` |"
+            echo "| Release path | \`\$web/$APP/releases/${{ github.sha }}/\` |"
+            echo "| Key Vault | \`$KV\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

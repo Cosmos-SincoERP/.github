@@ -1,0 +1,72 @@
+name: Sync governance to consumer repos
+
+# Propaga cambios de gobernanza (dependabot.yml, paths de reusables) a los
+# repos consumidores listados en docs/repos-manifest.yml.
+# Ver ADR 0002 §E.3 y el plan en repos-manifest.yml.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/templates/dependabot-*.yml'
+      - 'docs/repos-manifest.yml'
+      - '.github/workflows/_reusable-*.yml'
+      - '.github/scripts/sync-governance.sh'
+      - '.github/workflows/sync-governance.yml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Solo reporta cambios sin abrir PRs'
+        type: boolean
+        default: true
+      target_repo:
+        description: 'Filtrar a un solo repo (vacío = todos)'
+        type: string
+        default: ''
+      only:
+        description: 'Limitar el alcance del sync'
+        type: choice
+        default: 'all'
+        options:
+          - all
+          - dependabot
+          - uses
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-governance
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Genera un token efímero (~1h) scoped a todos los repos de la org
+      # donde está instalada la App cosmos-governance-sync.
+      - name: Generate App token
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GOVERNANCE_SYNC_APP_ID }}
+          private-key: ${{ secrets.GOVERNANCE_SYNC_APP_PRIVATE_KEY }}
+          owner: Cosmos-SincoERP
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Run sync
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          TARGET_REPO: ${{ inputs.target_repo || '' }}
+          ONLY: ${{ inputs.only || 'all' }}
+          SYNC_SHA: ${{ github.sha }}
+        run: bash .github/scripts/sync-governance.sh

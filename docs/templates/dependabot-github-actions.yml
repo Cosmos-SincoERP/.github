@@ -1,3 +1,9 @@
+# ─────────────────────────────────────────────────────────────────
+# Managed by Cosmos-SincoERP/.github — do not edit manually in this repo.
+# Source: docs/templates/dependabot-github-actions.yml in Cosmos-SincoERP/.github
+# Cambios locales se sobrescriben por el sync workflow.
+# Para personalizar: editar el template fuente o añadir override al manifest.
+# ─────────────────────────────────────────────────────────────────
 version: 2
 updates:
   - package-ecosystem: "github-actions"

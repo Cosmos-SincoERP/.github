@@ -1,0 +1,184 @@
+name: Tests .NET (reusable)
+
+concurrency:
+  group: pr-${{ github.head_ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  workflow_call:
+    inputs:
+      solution_path:
+        description: "Ruta al .sln o .csproj (relativa al checkout). Si se omite, descubre el primer .sln en working_directory."
+        type: string
+        required: false
+        default: ""
+      working_directory:
+        description: "Directorio donde se ejecutan los comandos dotnet."
+        type: string
+        required: false
+        default: "."
+      dotnet_version:
+        description: "Versión del SDK .NET a usar."
+        type: string
+        required: false
+        default: "10.0.x"
+      configuration:
+        description: "Configuración de build (Debug | Release)."
+        type: string
+        required: false
+        default: "Release"
+      excluded_projects:
+        description: >
+          Lista de proyectos a EXCLUIR del step Test (uno por línea, nombre del .csproj
+          con o sin extensión, sin ruta). Restore y build siguen procesando el .sln entero,
+          así que los proyectos excluidos igual se compilan. Vacío = comportamiento original
+          (`dotnet test` sobre el target). Ejemplo:
+            ObligacionesPorPagar.Reconocimiento.AcceptanceTests
+            ObligacionesPorPagar.Reconocimiento.Consultas.Tests
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: dotnet build & test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET ${{ inputs.dotnet_version }}
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Cache de paquetes NuGet
+        uses: actions/cache@v5
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles(format('{0}/**/*.csproj', inputs.working_directory)) }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Resolver target (.sln/.csproj)
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.solution_path }}" ]]; then
+            target="${{ inputs.solution_path }}"
+          else
+            target=$(find . -maxdepth 2 -name "*.sln" -print -quit)
+          fi
+          if [[ -z "$target" ]]; then
+            echo "::error::No se encontró ningún .sln en '${{ inputs.working_directory }}'. Pasa solution_path explícitamente."
+            exit 1
+          fi
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "Target resuelto: $target"
+
+      - name: Restore
+        run: dotnet restore "${{ steps.resolve.outputs.target }}"
+
+      - name: Build
+        run: dotnet build "${{ steps.resolve.outputs.target }}" --configuration ${{ inputs.configuration }} --no-restore
+
+      - name: Test
+        env:
+          TARGET: ${{ steps.resolve.outputs.target }}
+          CONFIG: ${{ inputs.configuration }}
+          RESULTS: ${{ runner.temp }}/test-results
+          EXCLUDED: ${{ inputs.excluded_projects }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          common_args=(
+            --configuration "$CONFIG"
+            --no-build
+            --logger "trx;LogFileName=test-results.trx"
+            --results-directory "$RESULTS"
+          )
+
+          if [[ -z "$EXCLUDED" ]]; then
+            dotnet test "$TARGET" "${common_args[@]}"
+            exit 0
+          fi
+
+          mapfile -t exclude_list < <(
+            echo "$EXCLUDED" | tr -d '\r' \
+              | sed -E 's/[[:space:]]+$//;s/^[[:space:]]+//' \
+              | sed '/^$/d' \
+              | sed -E 's/\.csproj$//'
+          )
+          echo "Proyectos excluidos del test:"
+          printf '  - %s\n' "${exclude_list[@]}"
+
+          # `dotnet sln list` imprime un header de 2 líneas y luego rutas relativas.
+          mapfile -t all_projects < <(dotnet sln "$TARGET" list | tail -n +3 | tr -d '\r')
+
+          to_test=()
+          for proj in "${all_projects[@]}"; do
+            [[ -z "$proj" ]] && continue
+            # Solo .csproj — saltamos .dcproj y otros tipos que `dotnet test` no soporta.
+            [[ "$proj" != *.csproj ]] && continue
+            base=$(basename "$proj" .csproj)
+            skip=false
+            for excl in "${exclude_list[@]}"; do
+              if [[ "$base" == "$excl" ]]; then
+                skip=true
+                break
+              fi
+            done
+            [[ "$skip" == false ]] && to_test+=("$proj")
+          done
+
+          echo "Proyectos sometidos a dotnet test:"
+          printf '  - %s\n' "${to_test[@]}"
+
+          # `dotnet test` sobre un proyecto sin tests no falla — simplemente no
+          # descubre nada. Iterar evita distinguir test-projects de no-test.
+          failed=0
+          for proj in "${to_test[@]}"; do
+            if ! dotnet test "$proj" "${common_args[@]}"; then
+              failed=1
+            fi
+          done
+          exit $failed
+
+      - name: Subir resultados de tests
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dotnet-test-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/test-results
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Resumen
+        if: always()
+        env:
+          EXCLUDED: ${{ inputs.excluded_projects }}
+        shell: bash
+        run: |
+          excluded_display="(ninguno)"
+          if [[ -n "$EXCLUDED" ]]; then
+            excluded_display=$(echo "$EXCLUDED" | tr -d '\r' | sed '/^[[:space:]]*$/d' | paste -sd ', ' -)
+          fi
+          {
+            echo "## Tests .NET"
+            echo ""
+            echo "| Campo | Valor |"
+            echo "|---|---|"
+            echo "| Target | \`${{ steps.resolve.outputs.target }}\` |"
+            echo "| Configuración | \`${{ inputs.configuration }}\` |"
+            echo "| .NET SDK | \`${{ inputs.dotnet_version }}\` |"
+            echo "| Working dir | \`${{ inputs.working_directory }}\` |"
+            echo "| Excluidos | ${excluded_display} |"
+          } >> "$GITHUB_STEP_SUMMARY"
