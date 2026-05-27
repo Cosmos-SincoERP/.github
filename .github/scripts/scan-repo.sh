@@ -7,15 +7,13 @@
 # y detecta overrides (docker_directories, terraform_directory). Imprime el
 # bloque YAML listo para pegar en docs/repos-manifest.yml.
 #
-# Heurísticas de stack (primera coincidencia gana):
-#   1. *.csproj / *.sln  → dotnet
-#   2. package.json      → node-bun
-#   3. *.tf              → terraform
-#   4. (ninguno)         → github-actions   (baseline solo)
-#
-# Read-only: el clone se borra al terminar.
+# La lógica de detección vive en lib-scan.sh (compartida con drift-check).
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-scan.sh
+source "$SCRIPT_DIR/lib-scan.sh"
 
 ORG="${ORG:-Cosmos-SincoERP}"
 REPO="${1:-}"
@@ -30,71 +28,35 @@ trap 'rm -rf "$WORKDIR"' EXIT
 
 CLONE_DIR="$WORKDIR/$REPO"
 
-if ! git clone --quiet --depth 1 "https://github.com/$ORG/$REPO.git" "$CLONE_DIR" 2>"$WORKDIR/clone.err"; then
+if ! gh repo clone "$ORG/$REPO" "$CLONE_DIR" -- --quiet --depth 1 2>"$WORKDIR/clone.err"; then
   echo "ERROR: no se pudo clonar $ORG/$REPO" >&2
   sed 's/^/  /' "$WORKDIR/clone.err" >&2
   exit 2
 fi
 
-cd "$CLONE_DIR"
-
 # Repo vacío: clone --depth 1 deja solo .git/. Avisar y emitir baseline.
-if [ -z "$(ls -A . 2>/dev/null | grep -v '^\.git$' || true)" ]; then
+if [ -z "$(ls -A "$CLONE_DIR" 2>/dev/null | grep -v '^\.git$' || true)" ]; then
   echo "WARN: $ORG/$REPO está vacío (sin commits). Emitiendo baseline; revisar cuando tenga contenido." >&2
 fi
 
-# --- Inferir stack -----------------------------------------------------------
-stack="github-actions"
-if find . -maxdepth 5 \( -name '*.csproj' -o -name '*.sln' \) \
-     -not -path '*/node_modules/*' 2>/dev/null | grep -q .; then
-  stack="dotnet"
-elif find . -maxdepth 5 -name 'package.json' \
-       -not -path '*/node_modules/*' 2>/dev/null | grep -q .; then
-  stack="node-bun"
-elif find . -maxdepth 5 -name '*.tf' \
-       -not -path '*/.terraform/*' 2>/dev/null | grep -q .; then
-  stack="terraform"
-fi
+stack="$(scan_detect_stack "$CLONE_DIR")"
 
-# --- Detectar docker_directories --------------------------------------------
+# docker_directories en array (compatible bash 3.2).
+docker_dirs_csv="$(scan_detect_docker_dirs "$CLONE_DIR" | tr '\n' '|' | sed 's/|$//')"
 declare -a docker_dirs=()
-while IFS= read -r dockerfile; do
-  [ -z "$dockerfile" ] && continue
-  dir="$(dirname "$dockerfile")"
-  dir="${dir#./}"
-  if [ -z "$dir" ] || [ "$dir" = "." ]; then
-    docker_dirs+=("/")
-  else
-    docker_dirs+=("/$dir")
-  fi
-done < <(find . -maxdepth 6 -name 'Dockerfile' \
-           -not -path '*/node_modules/*' 2>/dev/null | sort -u)
-
-# Deduplicar preservando orden lexicográfico (bash 3.2 compatible).
-if [ ${#docker_dirs[@]} -gt 0 ]; then
-  dedup_csv="$(printf '%s\n' "${docker_dirs[@]}" | sort -u | tr '\n' '|')"
-  unset docker_dirs
-  declare -a docker_dirs=()
-  IFS='|' read -ra docker_dirs <<< "${dedup_csv%|}"
+if [ -n "$docker_dirs_csv" ]; then
+  IFS='|' read -ra docker_dirs <<< "$docker_dirs_csv"
 fi
 
-# --- Detectar terraform_directory (solo si stack=terraform) -----------------
-# Convención observada en el manifest: el código terraform "raíz" vive en /infra
-# cuando no está en la raíz del repo. Si hay *.tf directos en la raíz, no se
-# emite override (default "/"). Si hay infra/*.tf, se propone /infra. Cualquier
-# otro layout se deja sin override (el operador decide).
 terraform_dir=""
 if [ "$stack" = "terraform" ]; then
-  if ls ./*.tf >/dev/null 2>&1; then
-    : # tf en raíz, no override
-  elif ls ./infra/*.tf >/dev/null 2>&1; then
-    terraform_dir="/infra"
-  else
+  terraform_dir="$(scan_detect_terraform_dir "$CLONE_DIR")"
+  if [ "$terraform_dir" = "UNKNOWN" ]; then
     echo "WARN: stack=terraform pero no se detectó layout estándar (raíz ni /infra). Definir terraform_directory manualmente." >&2
+    terraform_dir=""
   fi
 fi
 
-# --- Render YAML -------------------------------------------------------------
 cat <<EOF
   - name: $REPO
     stack: $stack  # inferido

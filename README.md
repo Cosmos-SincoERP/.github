@@ -23,7 +23,8 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 │   └── scripts/
 │       ├── sync-governance.sh       # Lógica del sync
 │       ├── drift-check-governance.sh
-│       └── scan-repo.sh             # Helper de onboarding: propone bloque manifest
+│       ├── scan-repo.sh             # Helper de onboarding: propone bloque manifest
+│       └── lib-scan.sh              # Heurísticas compartidas (stack, docker, terraform)
 ├── docs/
 │   ├── adr/                          # Architecture Decision Records (MADR-lite)
 │   │   ├── README.md                 # Índice y guía para nuevos ADRs
