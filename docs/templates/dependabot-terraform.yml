@@ -8,6 +8,8 @@
 # ─────────────────────────────────────────────────────────────────
 version: 2
 updates:
+  # Ajustar `directory` al subdir donde viven los .tf (típicamente /infra,
+  # /infraestructura, etc.). El default "/" rara vez aplica.
   - package-ecosystem: "terraform"
     directory: "{{ terraform_directory | default('/') }}"
     schedule:
