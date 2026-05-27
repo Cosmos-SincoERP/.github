@@ -246,14 +246,26 @@ EOF
     log "  ✓ PR #$existing_pr actualizado en $owner_repo"
     COUNT_PR_UPDATED+=1
   else
-    local pr_url
-    pr_url="$(gh pr create --repo "$owner_repo" \
-      --base main --head "$BRANCH_NAME" \
-      --title "$COMMIT_MSG_BASE" \
-      --body "$pr_body" \
-      --label "governance-sync" 2>&1 | tail -n1 || true)"
-    log "  ✓ PR abierto: $pr_url"
-    COUNT_PR_OPENED+=1
+    # No usar --label aquí: si la label no existe en el repo destino, gh
+    # aborta la creación entera (no solo la asignación de label). Crearla
+    # primero y verificar el exit code de pr create real.
+    gh label create "governance-sync" --repo "$owner_repo" \
+      --color "0e8a16" --description "PR generado por el sync de gobernanza" \
+      >/dev/null 2>&1 || true
+
+    local pr_output
+    if pr_output="$(gh pr create --repo "$owner_repo" \
+        --base main --head "$BRANCH_NAME" \
+        --title "$COMMIT_MSG_BASE" \
+        --body "$pr_body" \
+        --label "governance-sync" 2>&1)"; then
+      log "  ✓ PR abierto: $pr_output"
+      COUNT_PR_OPENED+=1
+    else
+      fail "PR create falló para $owner_repo:"
+      printf '%s\n' "$pr_output" | sed 's/^/      /'
+      COUNT_FAILED+=1; FAILED_REPOS+=("$owner_repo (PR create failed)")
+    fi
   fi
 
   cd - >/dev/null
