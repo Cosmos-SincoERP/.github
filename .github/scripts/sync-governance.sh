@@ -53,7 +53,8 @@ render_dependabot() {
   fi
 
   # Sustitución del único token soportado por ahora.
-  sed "s|{{ terraform_directory | default('/') }}|$terraform_directory|g" "$template"
+  # Delimitador `#` (no `|`) porque el patrón contiene un `|` literal.
+  sed "s#{{ terraform_directory | default('/') }}#$terraform_directory#g" "$template"
 }
 
 # Obtiene el contenido actual de un archivo en un repo destino.
