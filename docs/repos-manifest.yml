@@ -65,21 +65,20 @@ repos:
   - name: Cosmos.Asistente
     stack: dotnet
     consumes: [reusables, dependabot]
-    # Dockerfiles a confirmar; sin override por ahora.
+    overrides:
+      docker_directories:
+        - /Cosmos.Asistente.Comandos.API
+        - /Cosmos.Asistente.Consultas.API
 
   - name: Cosmos.Asistente.Front
     stack: node-bun
     consumes: [reusables, dependabot]
-    overrides:
-      docker_directories:
-        - /
+    # Sin Dockerfile aún; añadir docker_directories cuando exista.
 
   - name: Cosmos.Front.Shell
     stack: node-bun
     consumes: [reusables, dependabot]
-    overrides:
-      docker_directories:
-        - /
+    # Sin Dockerfile aún; añadir docker_directories cuando exista.
 
   # ── Contabilidad ────────────────────────────────────────────────
   - name: Cosmos.Contabilidad
@@ -93,8 +92,9 @@ repos:
         - /Cosmos.Contabilidad.Consultas.MCP.Server
 
   - name: Cosmos.Contabilidad.Gateway
-    stack: dotnet
+    stack: github-actions
     consumes: [reusables, dependabot]
+    # Gateway empaquetado como Docker (nginx); sin código .NET propio.
     overrides:
       docker_directories:
         - /
@@ -126,8 +126,9 @@ repos:
         - /Cosmos.Impuestos.Seed
 
   - name: Cosmos.Impuestos.Gateway
-    stack: dotnet
+    stack: github-actions
     consumes: [reusables, dependabot]
+    # Gateway empaquetado como Docker (nginx); sin código .NET propio.
     overrides:
       docker_directories:
         - /
@@ -154,8 +155,9 @@ repos:
         - /ObligacionesPorPagar.Entradas.API
 
   - name: ObligacionesPorPagar.Gateway
-    stack: dotnet
+    stack: github-actions
     consumes: [reusables, dependabot]
+    # Gateway empaquetado como Docker (nginx); sin código .NET propio.
     overrides:
       docker_directories:
         - /
@@ -188,7 +190,7 @@ repos:
         - /ObligacionesPorPagar.Radicacion.Comandos.API
         - /ObligacionesPorPagar.Radicacion.Comandos.MCP.Server
         - /ObligacionesPorPagar.Radicacion.Consultas.API
-        - /ObligacionesPorPagar.Radicacion.MCP.Server
+        - /ObligacionesPorPagar.Radicacion.Consultas.MCP.Server
         - /ObligacionesPorPagar.Radicacion.PaymentPolling
 
   - name: ObligacionesPorPagar.Reconocimiento
