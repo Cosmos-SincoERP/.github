@@ -168,9 +168,15 @@ apply_changes() {
   local clone_dir="$workdir/.clone"
   rm -rf "$clone_dir"
 
-  # Clone (depth 1 para velocidad; el bot solo necesita HEAD)
-  if ! git clone --depth 1 --branch main "https://x-access-token:$GH_TOKEN@github.com/$owner_repo.git" "$clone_dir" 2>&1 | grep -v "^Cloning into"; then
-    fail "Clone falló para $owner_repo"
+  # Clone (depth 1 para velocidad; el bot solo necesita HEAD).
+  # Captura output con stderr para reportar errores reales (no usar pipe
+  # con grep porque genera falsos negativos cuando clone tiene éxito).
+  local clone_log
+  if ! clone_log="$(git clone --depth 1 --branch main \
+        "https://x-access-token:$GH_TOKEN@github.com/$owner_repo.git" \
+        "$clone_dir" 2>&1)"; then
+    fail "Clone falló para $owner_repo:"
+    printf '%s\n' "$clone_log" | sed 's/^/      /'
     COUNT_FAILED+=1; FAILED_REPOS+=("$owner_repo (clone failed)")
     return 0
   fi
