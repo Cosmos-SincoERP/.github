@@ -268,6 +268,7 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 #### E.3 — Dependabot version updates
 - **Decisión**: Aplicar — Fase 1, plantillas por stack en `Cosmos-SincoERP/.github`.
 - **Configuración**: crear plantillas `dependabot-<stack>.yml` (`.NET`, `node-bun`, `docker`, `terraform`, `github-actions`). Cada repo vendor-copia la(s) que aplican. Cadencia semanal; usar `groups:` para evitar PR storm.
+- **Política de agrupación (refinada 2026-05-26 tras observar 31 PRs abiertos en el bootstrap inicial)**: bundle agresivo por ecosystem con `groups` que incluya `patterns: ["*"]` y `applies-to: version-updates`. Mantener subgrupos semánticos cuando aporten claridad de revisión (NuGet: `microsoft` + `tests` + `all-other`; npm/bun: `types` + `eslint` + `all-other`). Para ecosystems sin subgrupos previos (docker, terraform, github-actions): un único grupo `all`. `open-pull-requests-limit: 5` (suficiente con bundles). `schedule.day` distribuido por ecosystem para descargar CI: NuGet=monday, npm/bun=tuesday, docker=wednesday, terraform=thursday, github-actions=friday. Security updates (E.2) son canal independiente y no se ven afectados por estos límites — siguen llegando 1-PR-por-CVE con su propio límite interno de 10.
 - **Justificación**: mantiene dependencias al día proactivamente. Las plantillas estandarizan la configuración entre repos.
 
 #### E.4 — Dependency review action en PRs
@@ -757,6 +758,8 @@ Push ruleset org-level (Fase 0) — bloqueo de paths sensibles y tamaño.
 
 ### A2 — Plantillas Dependabot por stack
 
+Política de agrupación (ver §E.3): bundle agresivo por ecosystem con `patterns: ["*"]` y `applies-to: version-updates`, con subgrupos semánticos cuando aporten claridad. `open-pull-requests-limit: 5`. `schedule.day` distribuido por ecosystem para descargar CI.
+
 #### `docs/templates/dependabot-dotnet.yml`
 
 ```yaml
@@ -767,20 +770,33 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 5
     groups:
       microsoft:
+        applies-to: version-updates
         patterns: ["Microsoft.*", "System.*"]
       tests:
+        applies-to: version-updates
         patterns: ["xunit*", "Moq*", "FluentAssertions*", "Bogus*"]
+      all-other:
+        applies-to: version-updates
+        patterns: ["*"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "friday"
+    open-pull-requests-limit: 5
+    groups:
+      all:
+        applies-to: version-updates
+        patterns: ["*"]
 ```
 
 #### `docs/templates/dependabot-node-bun.yml`
+
+Reemplazar `"npm"` por `"bun"` en repos bun-only (con `bun.lock` y sin `package-lock.json`). Dependabot soporta ambos como `package-ecosystem`.
 
 ```yaml
 version: 2
@@ -789,18 +805,29 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 10
+      day: "tuesday"
+    open-pull-requests-limit: 5
     groups:
       types:
+        applies-to: version-updates
         patterns: ["@types/*"]
       eslint:
+        applies-to: version-updates
         patterns: ["eslint*", "@typescript-eslint/*"]
+      all-other:
+        applies-to: version-updates
+        patterns: ["*"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "friday"
+    open-pull-requests-limit: 5
+    groups:
+      all:
+        applies-to: version-updates
+        patterns: ["*"]
 ```
 
 #### `docs/templates/dependabot-docker.yml`
@@ -812,15 +839,28 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "wednesday"
     open-pull-requests-limit: 5
+    groups:
+      all:
+        applies-to: version-updates
+        patterns: ["*"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "friday"
+    open-pull-requests-limit: 5
+    groups:
+      all:
+        applies-to: version-updates
+        patterns: ["*"]
 ```
 
 #### `docs/templates/dependabot-terraform.yml`
+
+Ajustar `directory` al subdir donde viven los `.tf` (típicamente `/infra`, `/infraestructura`). El default `/` rara vez aplica.
 
 ```yaml
 version: 2
@@ -829,11 +869,23 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "thursday"
+    open-pull-requests-limit: 5
+    groups:
+      all:
+        applies-to: version-updates
+        patterns: ["*"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "friday"
+    open-pull-requests-limit: 5
+    groups:
+      all:
+        applies-to: version-updates
+        patterns: ["*"]
 ```
 
 #### `docs/templates/dependabot-github-actions.yml`
@@ -847,6 +899,12 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "friday"
+    open-pull-requests-limit: 5
+    groups:
+      all:
+        applies-to: version-updates
+        patterns: ["*"]
 ```
 
 ### A3 — Reusable workflows nuevos

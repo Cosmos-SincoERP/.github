@@ -1,11 +1,25 @@
 version: 2
 updates:
+  # Ajustar `directory` al subdir donde viven los .tf (típicamente /infra,
+  # /infraestructura, etc.). El default "/" rara vez aplica.
   - package-ecosystem: "terraform"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "thursday"
+    open-pull-requests-limit: 5
+    groups:
+      all:
+        applies-to: version-updates
+        patterns: ["*"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "friday"
+    open-pull-requests-limit: 5
+    groups:
+      all:
+        applies-to: version-updates
+        patterns: ["*"]
