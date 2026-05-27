@@ -54,7 +54,7 @@ jobs:
         id: token
         uses: actions/create-github-app-token@v3
         with:
-          app-id: ${{ secrets.GOVERNANCE_SYNC_APP_ID }}
+          client-id: ${{ secrets.GOVERNANCE_SYNC_APP_CLIENT_ID }}
           private-key: ${{ secrets.GOVERNANCE_SYNC_APP_PRIVATE_KEY }}
           owner: Cosmos-SincoERP
 
