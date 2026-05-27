@@ -208,6 +208,15 @@ repos:
     consumes: [reusables, dependabot]
     # Dockerfiles a confirmar.
 
+  # ── Terceros ────────────────────────────────────────────────────
+  - name: Cosmos.Terceros
+    stack: dotnet
+    consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /Cosmos.Terceros.Comandos.API
+        - /Cosmos.Terceros.Consultas.API
+
   # ── Repos placeholder / docs / templates ────────────────────────
   # Solo necesitan baseline (security-checks vía reusables + dependabot
   # github-actions). Sin código de aplicación aún, o solo docs/diagrams.
@@ -249,9 +258,6 @@ repos:
 skip:
   - name: Cosmos.AgentSkills
     reason: "ex-Cosmos.PlatformWorkflows; ahora es repo fuente de skills/tooling, governance se redefine aparte"
-
-  - name: Cosmos.Terceros
-    reason: "default branch ≠ main (feature/dominio); excepción documentada en .github#16"
 
   - name: Observabilidad
     reason: "repo vacío (size=0, sin commits); sync no puede clonar. Reclasificar a repos: cuando tenga contenido y stack identificable"
