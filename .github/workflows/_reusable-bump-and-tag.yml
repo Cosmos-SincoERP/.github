@@ -1,0 +1,195 @@
+name: Bump SemVer + tag (reusable)
+
+# Calcula la siguiente version SemVer de un paquete NuGet consultando nuget.org,
+# crea y empuja el tag git correspondiente y, opcionalmente, abre un GitHub
+# Release con notas autogeneradas. No publica el paquete: eso es responsabilidad
+# del caller, que tipicamente encadena este reusable con `_reusable-nuget-publish.yml`.
+
+concurrency:
+  group: deploy-${{ github.workflow }}-${{ inputs.environment || 'default' }}
+  cancel-in-progress: false
+
+on:
+  workflow_call:
+    inputs:
+      package_id:
+        description: "ID del paquete en nuget.org. Ej: ObligacionesPorPagar.Notificaciones.Contratos"
+        type: string
+        required: true
+      tag_prefix:
+        description: "Prefijo del tag git, sin la version. Ej: notificaciones-contratos-v"
+        type: string
+        required: true
+      bump_type:
+        description: "Tipo de bump SemVer: patch | minor | major"
+        type: string
+        required: true
+      initial_version:
+        description: "Version a usar si el paquete nunca fue publicado (404 en nuget.org)."
+        type: string
+        required: false
+        default: "0.1.0"
+      create_github_release:
+        description: "Si es true, abre un GitHub Release con --generate-notes."
+        type: boolean
+        required: false
+        default: false
+      nuget_source_base:
+        description: "Base del feed (formato v3-flatcontainer). Default nuget.org."
+        type: string
+        required: false
+        default: "https://api.nuget.org/v3-flatcontainer"
+    outputs:
+      previous_version:
+        description: "Ultima version estable publicada antes del bump (o 'none' si no habia ninguna)."
+        value: ${{ jobs.bump.outputs.previous_version }}
+      new_version:
+        description: "Version calculada por el bump."
+        value: ${{ jobs.bump.outputs.new_version }}
+      new_tag:
+        description: "Tag creado (tag_prefix + new_version)."
+        value: ${{ jobs.bump.outputs.new_tag }}
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    name: Calcular bump y crear tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      previous_version: ${{ steps.calculate.outputs.previous_version }}
+      new_version: ${{ steps.calculate.outputs.new_version }}
+      new_tag: ${{ steps.calculate.outputs.new_tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validar inputs
+        shell: bash
+        env:
+          BUMP_TYPE: ${{ inputs.bump_type }}
+        run: |
+          set -euo pipefail
+          case "$BUMP_TYPE" in
+            patch|minor|major) ;;
+            *)
+              echo "::error::bump_type invalido: '$BUMP_TYPE'. Valores aceptados: patch, minor, major."
+              exit 1
+              ;;
+          esac
+
+      - name: Calcular nueva version
+        id: calculate
+        shell: bash
+        env:
+          PACKAGE_ID: ${{ inputs.package_id }}
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+          BUMP_TYPE: ${{ inputs.bump_type }}
+          INITIAL_VERSION: ${{ inputs.initial_version }}
+          NUGET_BASE: ${{ inputs.nuget_source_base }}
+        run: |
+          set -euo pipefail
+
+          pkg_lower=$(echo "$PACKAGE_ID" | tr '[:upper:]' '[:lower:]')
+          url="${NUGET_BASE}/${pkg_lower}/index.json"
+
+          body=$(mktemp)
+          http_code=$(curl -sS -o "$body" -w '%{http_code}' "$url" || echo "000")
+
+          if [[ "$http_code" == "404" ]]; then
+            echo "Paquete no encontrado en nuget.org. Usando initial_version."
+            previous="none"
+            new="$INITIAL_VERSION"
+          elif [[ "$http_code" == "200" ]]; then
+            previous=$(jq -r '.versions[]' "$body" \
+              | grep -vE '-' \
+              | sort -V \
+              | tail -n 1 || true)
+            if [[ -z "$previous" ]]; then
+              echo "El paquete existe pero sin versiones estables. Usando initial_version."
+              previous="none"
+              new="$INITIAL_VERSION"
+            else
+              IFS='.' read -r major minor patch <<< "$previous"
+              case "$BUMP_TYPE" in
+                patch) patch=$((patch + 1)) ;;
+                minor) minor=$((minor + 1)); patch=0 ;;
+                major) major=$((major + 1)); minor=0; patch=0 ;;
+              esac
+              new="${major}.${minor}.${patch}"
+            fi
+          else
+            echo "::error::Respuesta inesperada de nuget.org (HTTP $http_code) al consultar ${url}"
+            cat "$body" >&2 || true
+            exit 1
+          fi
+
+          tag="${TAG_PREFIX}${new}"
+
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "::error::El tag '${tag}' ya existe en el repo. Posible race condition o version manual fuera de banda."
+            exit 1
+          fi
+
+          {
+            echo "previous_version=${previous}"
+            echo "new_version=${new}"
+            echo "new_tag=${tag}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Paquete:  ${PACKAGE_ID}"
+          echo "Previa:   ${previous}"
+          echo "Bump:     ${BUMP_TYPE}"
+          echo "Nueva:    ${new}"
+          echo "Tag:      ${tag}"
+
+      - name: Crear y empujar tag
+        shell: bash
+        env:
+          TAG: ${{ steps.calculate.outputs.new_tag }}
+          PREVIOUS: ${{ steps.calculate.outputs.previous_version }}
+          PACKAGE_ID: ${{ inputs.package_id }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release ${PACKAGE_ID} ${TAG} (previa: ${PREVIOUS})"
+          git push origin "$TAG"
+
+      - name: Crear GitHub Release
+        if: ${{ inputs.create_github_release }}
+        shell: bash
+        env:
+          TAG: ${{ steps.calculate.outputs.new_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            --verify-tag
+
+      - name: Resumen
+        if: always()
+        shell: bash
+        env:
+          PACKAGE_ID: ${{ inputs.package_id }}
+          PREVIOUS: ${{ steps.calculate.outputs.previous_version }}
+          NEW_VERSION: ${{ steps.calculate.outputs.new_version }}
+          NEW_TAG: ${{ steps.calculate.outputs.new_tag }}
+          BUMP_TYPE: ${{ inputs.bump_type }}
+          CREATED_RELEASE: ${{ inputs.create_github_release }}
+        run: |
+          {
+            echo "## Bump SemVer + tag"
+            echo ""
+            echo "- Paquete: \`${PACKAGE_ID}\`"
+            echo "- Version previa: \`${PREVIOUS}\`"
+            echo "- Bump: \`${BUMP_TYPE}\`"
+            echo "- Version nueva: \`${NEW_VERSION}\`"
+            echo "- Tag creado: \`${NEW_TAG}\`"
+            echo "- GitHub Release: \`${CREATED_RELEASE}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

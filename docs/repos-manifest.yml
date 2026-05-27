@@ -1,0 +1,137 @@
+# ─────────────────────────────────────────────────────────────────
+# Repos governed by the .github sync workflows.
+#
+# Source of truth: repos en la org Cosmos-SincoERP que consumen
+# `dependabot.yml` y/o `_reusable-*.yml` desde este repo.
+#
+# Editar este archivo es la forma de onboarding/offboarding del sync.
+# Stack determina cuál template de dependabot se propaga.
+# `consumes` permite opt-out parcial (ej. solo dependabot, sin reusables).
+# `overrides` permite personalización mínima documentada por repo.
+#
+# Ver Pieza 1 del plan: docs/adr/0002 §E.3 (managed sync).
+# ─────────────────────────────────────────────────────────────────
+
+repos:
+  # ── BuildingBlocks / librerías .NET ─────────────────────────────
+  - name: Cosmos.BuildingBlocks
+    stack: dotnet
+    consumes: [reusables, dependabot]
+
+  # ── ApplicationPlane (orquestador del plane) ────────────────────
+  - name: ApplicationPlane
+    stack: dotnet
+    consumes: [reusables, dependabot]
+
+  # ── Contabilidad ────────────────────────────────────────────────
+  - name: Cosmos.Contabilidad
+    stack: dotnet
+    consumes: [reusables, dependabot]
+
+  - name: Cosmos.Contabilidad.Gateway
+    stack: dotnet
+    consumes: [reusables, dependabot]
+
+  - name: Cosmos.Contabilidad.Front
+    stack: node-bun
+    consumes: [reusables, dependabot]
+
+  - name: Cosmos.Contabilidad.Infraestructura
+    stack: terraform
+    consumes: [reusables, dependabot]
+    overrides:
+      terraform_directory: /infra
+
+  # ── Impuestos ───────────────────────────────────────────────────
+  - name: Cosmos.Impuestos
+    stack: dotnet
+    consumes: [reusables, dependabot]
+
+  - name: Cosmos.Impuestos.Gateway
+    stack: dotnet
+    consumes: [reusables, dependabot]
+
+  - name: Cosmos.Impuestos.Front
+    stack: node-bun
+    consumes: [reusables, dependabot]
+
+  - name: Cosmos.Impuestos.Infraestructura
+    stack: terraform
+    consumes: [reusables, dependabot]
+    overrides:
+      terraform_directory: /infra
+
+  # ── ObligacionesPorPagar ────────────────────────────────────────
+  - name: ObligacionesPorPagar.Entradas
+    stack: dotnet
+    consumes: [reusables, dependabot]
+
+  - name: ObligacionesPorPagar.Gateway
+    stack: dotnet
+    consumes: [reusables, dependabot]
+
+  - name: ObligacionesPorPagar.Front
+    stack: node-bun
+    consumes: [reusables, dependabot]
+
+  - name: ObligacionesPorPagar.Infraestructura
+    stack: terraform
+    consumes: [reusables, dependabot]
+    overrides:
+      terraform_directory: /infra
+
+  - name: ObligacionesPorPagar.Notificaciones
+    stack: dotnet
+    consumes: [reusables, dependabot]
+
+  - name: ObligacionesPorPagar.Radicacion
+    stack: dotnet
+    consumes: [reusables, dependabot]
+
+  - name: ObligacionesPorPagar.Reconocimiento
+    stack: dotnet
+    consumes: [reusables, dependabot]
+
+# ─────────────────────────────────────────────────────────────────
+# Opt-out explícito. Repos en la org que NO entran al sync.
+# Cada entrada requiere `reason:` justificando.
+# ─────────────────────────────────────────────────────────────────
+skip:
+  - name: Cosmos.PlatformWorkflows
+    reason: "será renombrado a Cosmos.AgentSkills tras la migración; governance se redefine aparte"
+
+  # Repos POC / bootcamp / archive-candidates
+  - name: Bootcamp
+    reason: "repo de capacitación, sin pipeline productiva"
+  - name: CuentasPorPagar
+    reason: "POC, sin pipeline productiva"
+  - name: CuentasPorPagar_Bootcamp
+    reason: "repo de capacitación público"
+  - name: SistemaRespiratorio
+    reason: "POC público"
+  - name: Bootcamp_Battleship
+    reason: "repo de capacitación público"
+  - name: Bletchley
+    reason: "POC interno"
+  - name: ObligacionesPorPaga.POC.ContainerApss
+    reason: "POC, no productivo"
+  - name: OxPFrontProvisional
+    reason: "deprecado, reemplazado por ObligacionesPorPagar.Front"
+  - name: Entradas
+    reason: "repo legacy, evaluar migración o archivo"
+
+# ─────────────────────────────────────────────────────────────────
+# Pendientes de clasificar (revisar uno por uno):
+#   - ControlPlane, ObligacionesPorPagar.ControlPlane: confirmar si
+#     son consumidores o infraestructura aparte.
+#   - Cosmos.Direcciones, Cosmos.Asistente, Cosmos.Asistente.Front,
+#     Cosmos.Terceros, Cosmos.Terceros.Front, Cosmos.DatosReferencia,
+#     Cosmos.CrossCuttingConcerns, Cosmos.Front.Shell, OCR,
+#     ObligacionesPorPagar.Integraciones, Analisis.ObligacionesPorPagar,
+#     ApplicationPlane.Infraestructura: agregar cuando se confirme
+#     uso de reusables o stack.
+#   - erp-definiciones, blog-ingenieria, architecture, diseno-modelo,
+#     Plataforma, ThirdParties, Alejandria, template-progressive-tdd-katas:
+#     repos de documentación / template; decidir si necesitan dependabot
+#     (ej. para GitHub Actions de cualquier workflow que tengan).
+# ─────────────────────────────────────────────────────────────────

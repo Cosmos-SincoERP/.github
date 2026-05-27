@@ -1,0 +1,349 @@
+name: Deploy a Docker Swarm (reusable)
+
+concurrency:
+  group: deploy-${{ github.workflow }}-${{ inputs.stack_environment || 'default' }}
+  cancel-in-progress: false
+
+on:
+  workflow_call:
+    inputs:
+      stack_file:
+        description: "Ruta al docker stack compose file (relativa al checkout)."
+        type: string
+        required: true
+      stack_name:
+        description: "Nombre del stack en Swarm."
+        type: string
+        required: true
+      image_tag:
+        description: |
+          Tag único a inyectar como variable de entorno IMAGE_TAG en el compose.
+          Modo legado: aplica un mismo tag a todos los servicios del stack.
+          Si se provee `image_tags_json`, este input se ignora.
+        type: string
+        required: false
+        default: ""
+      image_tags_json:
+        description: |
+          JSON object {"<servicio>": "<tag>", ...} con el tag a inyectar por servicio.
+          Solo debe incluir los servicios cuyas imágenes cambiaron en este push;
+          el resto se resuelve consultando Swarm (`docker service inspect`).
+          Cada servicio del stack file genera la variable IMAGE_TAG_<UPPER_SNAKE>
+          (ej: comandos-api → IMAGE_TAG_COMANDOS_API) lista para `${...}` en el compose.
+        type: string
+        required: false
+        default: "{}"
+      acr_name:
+        description: "Nombre del ACR (sin .azurecr.io)."
+        type: string
+        required: false
+        # Default histórico de OXP. Todo wrapper generado por la skill
+        # `onboard-dotnet-repo` versión bc-aware pasa este input via `with:`
+        # explícitamente desde el catálogo `bounded-contexts.yml`. Cuando todos
+        # los wrappers en repos OPP se regeneren con esa skill, considerar
+        # remover este default y hacer el input `required: true`.
+        default: "croxpdeveus2001"
+      repository_prefix:
+        description: "Prefijo de los repositorios. Se inyecta como REPOSITORY_PREFIX en el compose."
+        type: string
+        required: false
+        # Default histórico de OXP — ver nota en `acr_name`.
+        default: "oxp"
+      env_vars_json:
+        description: "JSON object con variables de entorno extra a inyectar (key/value strings)."
+        type: string
+        required: false
+        default: "{}"
+      stack_environment:
+        description: "Etiqueta del ambiente para el resumen (dev/staging/prod)."
+        type: string
+        required: false
+        default: "dev"
+      key_vault_name:
+        description: "Nombre del Key Vault desde donde leer los secretos a materializar como Docker Swarm secrets."
+        type: string
+        required: false
+        # Default histórico de OXP — ver nota en `acr_name`.
+        default: "kv-oxp-dev-eus2-001"
+      secret_names:
+        description: |
+          Lista separada por espacios de nombres de secretos en el Key Vault que el stack consume.
+          Vacío deshabilita la materialización (útil para stacks sin secretos sensibles).
+          Por cada nombre se crea un Docker Swarm secret versionado por hash (`<prefix>_<snake>_v<sha8>`)
+          y se expone una env var `SWARM_SECRET_<UPPER_SNAKE>` para que el stack file la referencie
+          en `name:` de cada secreto external.
+        type: string
+        required: false
+        default: ""
+      swarm_secret_prefix:
+        description: |
+          Prefijo del nombre del Swarm secret materializado (`<prefix>_<snake>_v<sha8>`).
+          Se usa también para identificar los secrets propios al hacer GC de huérfanos.
+          En contextos multi-dominio sobre la misma VM, cada dominio debe usar su propio prefijo.
+        type: string
+        required: false
+        # Default histórico de OXP — ver nota en `acr_name`.
+        default: "oxp"
+      runner_group:
+        description: |
+          Runner group de GitHub Actions donde correr el job (ej. `swarm-deploy-appl`,
+          `swarm-deploy-cont`). Cada caller debe declarar el suyo: el reusable no asume
+          ninguno porque los runners self-hosted del plane comparten labels y el
+          aislamiento por BC se hace exclusivamente vía runner group (ver
+          `bounded-contexts.yml`).
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: docker stack deploy ${{ inputs.stack_name }}
+    runs-on:
+      group: ${{ inputs.runner_group }}
+      labels: [self-hosted, azure, swarm-deploy]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Login al ACR (Managed Identity)
+        shell: bash
+        env:
+          ACR: ${{ inputs.acr_name }}
+        run: |
+          set -euo pipefail
+          az login --identity --output none
+          az acr login --name "$ACR"
+
+      - name: Materializar secretos del Key Vault como Docker Swarm secrets
+        if: inputs.secret_names != ''
+        shell: bash
+        env:
+          KV: ${{ inputs.key_vault_name }}
+          SECRETS: ${{ inputs.secret_names }}
+          PREFIX: ${{ inputs.swarm_secret_prefix }}
+        run: |
+          set -euo pipefail
+          for sec in $SECRETS; do
+            value=$(az keyvault secret show \
+              --vault-name "$KV" --name "$sec" --query value -o tsv)
+            # Hash del VALOR. Si el valor en KV no cambia, el nombre del secret en
+            # Swarm tampoco; si cambia, Swarm ve un secret nuevo y dispara rolling
+            # update sin tocar la imagen.
+            hash=$(printf '%s' "$value" | sha256sum | cut -c1-8)
+            sec_swarm="${PREFIX}_$(echo "$sec" | tr '-' '_')_v${hash}"
+            # `|| true` cubre el caso "ya existe con este hash" (idempotente);
+            # `inspect` valida que existió por la razón correcta y no por otro
+            # error como falta de permisos del daemon.
+            printf '%s' "$value" | docker secret create "$sec_swarm" - 2>/dev/null || true
+            docker secret inspect "$sec_swarm" >/dev/null
+            varname="SWARM_SECRET_$(echo "$sec" | tr '-' '_' | tr '[:lower:]' '[:upper:]')"
+            echo "$varname=$sec_swarm" >> "$GITHUB_ENV"
+          done
+          unset value
+
+      - name: Verificar existencia del stack file
+        shell: bash
+        env:
+          STACK_FILE: ${{ inputs.stack_file }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$STACK_FILE" ]]; then
+            echo "::error::Stack file no encontrado: $STACK_FILE"
+            exit 1
+          fi
+          echo "Stack file encontrado: $STACK_FILE"
+
+      - name: Resolver tags por servicio
+        shell: bash
+        env:
+          STACK_FILE: ${{ inputs.stack_file }}
+          STACK_NAME: ${{ inputs.stack_name }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          IMAGE_TAGS_JSON: ${{ inputs.image_tags_json }}
+          ACR_NAME: ${{ inputs.acr_name }}
+          ACR_LOGIN_SERVER: ${{ inputs.acr_name }}.azurecr.io
+          REPOSITORY_PREFIX: ${{ inputs.repository_prefix }}
+        run: |
+          set -euo pipefail
+
+          # Vars comunes que el stack file pueda usar.
+          {
+            echo "ACR_LOGIN_SERVER=$ACR_LOGIN_SERVER"
+            echo "REPOSITORY_PREFIX=$REPOSITORY_PREFIX"
+          } >> "$GITHUB_ENV"
+
+          # Modo legado: image_tag provisto sin image_tags_json → se inyecta
+          # como IMAGE_TAG global y nos saltamos la resolución por servicio.
+          if [[ -n "$IMAGE_TAG" && ( "$IMAGE_TAGS_JSON" == "{}" || -z "$IMAGE_TAGS_JSON" ) ]]; then
+            echo "Modo legado: IMAGE_TAG=$IMAGE_TAG"
+            echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          # Si ambos vienen vacíos, caemos al modo por-servicio: todos los
+          # servicios tomarán su tag actualmente desplegado en Swarm (resync
+          # del stack template sin cambios de imagen). Si tampoco hay tag en
+          # Swarm (servicio nuevo o cadena de deploys rotos), se intenta el
+          # último `main-*` publicado en el ACR antes de declarar missing.
+
+          # Modo por-servicio: para cada servicio del stack file, decide el tag.
+          if ! echo "$IMAGE_TAGS_JSON" | jq -e 'type == "object"' >/dev/null 2>&1; then
+            echo "::error::image_tags_json no es un objeto JSON válido"
+            exit 1
+          fi
+
+          # Tags actualmente desplegados en Swarm para este stack.
+          declare -A CURRENT_TAGS=()
+          while IFS='=' read -r svc image; do
+            [[ -z "$svc" ]] && continue
+            stripped="${image%%@*}"        # quita el digest @sha256:...
+            tag="${stripped##*:}"          # extrae el tag tras el último ':'
+            CURRENT_TAGS["$svc"]="$tag"
+          done < <(
+            docker stack services "$STACK_NAME" --format '{{.Name}}={{.Image}}' 2>/dev/null \
+              | sed "s|^${STACK_NAME}_||"
+          )
+
+          # Servicios declarados en el stack file.
+          mapfile -t SERVICES < <(yq '.services | keys | .[]' "$STACK_FILE")
+          if [[ ${#SERVICES[@]} -eq 0 ]]; then
+            echo "::error::No se pudieron leer servicios de $STACK_FILE"
+            exit 1
+          fi
+
+          # Extrae el nombre de imagen ACR de un servicio (ej. `entradas-api`)
+          # parseando la referencia del stack file. Asume el patrón canónico
+          # `${ACR_LOGIN_SERVER}/${REPOSITORY_PREFIX}/<imagen>:<tag>`. Devuelve
+          # vacío si el patrón no coincide (caller hace fallback a missing).
+          extract_image_name() {
+            local svc="$1"
+            local img_ref delim img_name
+            img_ref=$(yq ".services.\"$svc\".image" "$STACK_FILE")
+            delim='${REPOSITORY_PREFIX}/'
+            # ##*"$delim" → strip más largo del prefijo hasta `${REPOSITORY_PREFIX}/`
+            local stripped="${img_ref##*"$delim"}"
+            # Si no hubo match, ${img_ref##...} devuelve el original sin cambios.
+            [[ "$stripped" == "$img_ref" ]] && { echo ""; return; }
+            img_name="${stripped%%:*}"
+            echo "$img_name"
+          }
+
+          missing=()
+          for svc in "${SERVICES[@]}"; do
+            tag=$(echo "$IMAGE_TAGS_JSON" | jq -r --arg s "$svc" '.[$s] // empty')
+            origen="nuevo"
+            if [[ -z "$tag" ]]; then
+              tag="${CURRENT_TAGS[$svc]:-}"
+              origen="actual en Swarm"
+            fi
+            if [[ -z "$tag" ]]; then
+              # Fallback final: último tag main-* del repositorio en ACR.
+              # Self-healing para primer deploy o cuando deploys previos fallaron.
+              img_name=$(extract_image_name "$svc")
+              if [[ -n "$img_name" ]]; then
+                acr_tag=$(az acr repository show-tags \
+                  --name "$ACR_NAME" \
+                  --repository "${REPOSITORY_PREFIX}/${img_name}" \
+                  --orderby time_desc \
+                  --top 50 \
+                  --query "[?starts_with(@, 'main-')] | [0]" \
+                  -o tsv 2>/dev/null || true)
+                if [[ -n "$acr_tag" && "$acr_tag" != "null" ]]; then
+                  tag="$acr_tag"
+                  origen="último main-* en ACR (${REPOSITORY_PREFIX}/${img_name})"
+                fi
+              fi
+            fi
+            if [[ -z "$tag" ]]; then
+              missing+=("$svc")
+              continue
+            fi
+            upper=$(echo "$svc" | tr '[:lower:]-' '[:upper:]_')
+            var_name="IMAGE_TAG_${upper}"
+            echo "  $svc → $tag ($origen) → \$$var_name"
+            echo "$var_name=$tag" >> "$GITHUB_ENV"
+          done
+
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::Servicios sin tag (ni en image_tags_json, ni desplegados en Swarm, ni con tag main-* en ACR): ${missing[*]}. Verifica que el repositorio ${REPOSITORY_PREFIX}/<imagen> tenga al menos un build de main publicado, o pasa image_tags_json explícito vía workflow_dispatch."
+            exit 1
+          fi
+
+      - name: Validar stack file con variables resueltas
+        shell: bash
+        env:
+          STACK_FILE: ${{ inputs.stack_file }}
+        run: |
+          set -euo pipefail
+          docker stack config -c "$STACK_FILE" >/dev/null
+          echo "Stack file válido"
+
+      - name: Deploy
+        shell: bash
+        env:
+          STACK_FILE: ${{ inputs.stack_file }}
+          STACK_NAME: ${{ inputs.stack_name }}
+          EXTRA_ENV: ${{ inputs.env_vars_json }}
+        run: |
+          set -euo pipefail
+          if [[ "$EXTRA_ENV" != "{}" && -n "$EXTRA_ENV" ]]; then
+            while IFS='=' read -r k v; do
+              [[ -z "$k" ]] && continue
+              export "$k=$v"
+            done < <(echo "$EXTRA_ENV" | jq -r 'to_entries[] | "\(.key)=\(.value)"')
+          fi
+
+          docker stack deploy \
+            --with-registry-auth \
+            --resolve-image always \
+            -c "$STACK_FILE" \
+            "$STACK_NAME"
+
+      - name: GC de Swarm secrets ${{ inputs.swarm_secret_prefix }}_* huérfanos
+        if: always() && inputs.secret_names != ''
+        shell: bash
+        env:
+          PREFIX: ${{ inputs.swarm_secret_prefix }}
+        # Borra secrets <prefix>_* sin uso y con edad > 1h. La gate de edad evita
+        # romper deploys paralelos a otros stacks que ya crearon su secret
+        # pero aún no aplicaron `stack deploy` (ventana de pocos segundos).
+        run: |
+          set -euo pipefail
+          in_use=$(docker service ls -q | xargs -r -n1 docker service inspect \
+            --format '{{range .Spec.TaskTemplate.ContainerSpec.Secrets}}{{.SecretName}}{{"\n"}}{{end}}' \
+            | sort -u)
+          all_ours=$(docker secret ls --format '{{.Name}}' | grep "^${PREFIX}_" || true)
+          now=$(date +%s)
+          while IFS= read -r orphan; do
+            [[ -z "$orphan" ]] && continue
+            created=$(docker secret inspect "$orphan" --format '{{.CreatedAt}}')
+            created_ep=$(date -d "$created" +%s 2>/dev/null || echo "$now")
+            age=$(( now - created_ep ))
+            if (( age > 3600 )); then
+              echo "GC: removiendo $orphan (edad ${age}s, no referenciado)"
+              docker secret rm "$orphan" || true
+            fi
+          done < <(comm -23 <(echo "$all_ours" | sort -u) <(echo "$in_use"))
+
+      - name: Resumen
+        if: always()
+        shell: bash
+        env:
+          STACK_NAME: ${{ inputs.stack_name }}
+          STACK_ENV: ${{ inputs.stack_environment }}
+        run: |
+          list=$(docker stack services "$STACK_NAME" --format '{{.Name}}|{{.Image}}|{{.Replicas}}' 2>/dev/null || true)
+          {
+            echo "## Deploy Swarm — \`$STACK_NAME\` (\`$STACK_ENV\`)"
+            echo ""
+            if [[ -n "$list" ]]; then
+              echo "| Servicio | Imagen | Réplicas |"
+              echo "|---|---|---|"
+              echo "$list" | awk -F'|' '{ printf "| `%s` | `%s` | %s |\n", $1, $2, $3 }'
+            else
+              echo "_No fue posible listar servicios._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,57 @@
+name: Drift check governance
+
+# Verifica que los repos consumidores estén alineados con el manifest:
+#   - dependabot.yml coincide con el render esperado
+#   - workflows no tienen referencias al repo viejo (Cosmos.PlatformWorkflows)
+#   - repos nuevos en la org sin entrada en manifest ni skip
+# Reporta drift en una única issue actualizable en este repo.
+
+on:
+  schedule:
+    # Domingos 06:00 UTC (01:00 Colombia)
+    - cron: '0 6 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: drift-check-governance
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate token
+        id: token
+        env:
+          APP_ID: ${{ secrets.GOVERNANCE_SYNC_APP_ID }}
+          APP_KEY: ${{ secrets.GOVERNANCE_SYNC_APP_PRIVATE_KEY }}
+          PAT: ${{ secrets.GOVERNANCE_SYNC_PAT }}
+        run: |
+          if [ -n "$APP_ID" ] && [ -n "$APP_KEY" ]; then
+            echo "::error::App token aún no implementado."
+            exit 1
+          elif [ -n "$PAT" ]; then
+            echo "::add-mask::$PAT"
+            echo "token=$PAT" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No credential available."
+            exit 1
+          fi
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Run drift check
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          SELF_REPO: ${{ github.repository }}
+        run: bash .github/scripts/drift-check-governance.sh

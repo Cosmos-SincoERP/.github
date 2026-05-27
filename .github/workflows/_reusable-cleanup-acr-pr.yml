@@ -1,0 +1,248 @@
+name: Cleanup ACR — tags de PR (reusable)
+
+concurrency:
+  group: pr-${{ github.head_ref }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  workflow_call:
+    inputs:
+      acr_name:
+        description: "Nombre del ACR (sin .azurecr.io)."
+        type: string
+        required: false
+        # Default histórico de OXP. Todo wrapper generado por la skill
+        # `onboard-dotnet-repo` versión bc-aware pasa este input via `with:`
+        # explícitamente desde el catálogo `bounded-contexts.yml`.
+        default: "croxpdeveus2001"
+      repository_prefix:
+        description: "Prefijo común de los repositorios a barrer (ej: 'oxp')."
+        type: string
+        required: false
+        # Default histórico de OXP — ver nota en `acr_name`.
+        default: "oxp"
+      repositories_json:
+        description: |
+          JSON array con los nombres de repositorios (sin prefijo) a limpiar.
+          Si se omite, descubre todos los repos bajo {repository_prefix}/*.
+        type: string
+        required: false
+        default: "[]"
+      pr_number:
+        description: |
+          Si se provee, modo dirigido: borra `pr-{N}` y `pr-{N}-*` en cada repo,
+          sin verificar estado del PR (asume que el caller ya sabe que cerró).
+          Si se omite, modo barrido: revisa todos los `pr-*` y borra los de PRs
+          cerrados hace más de `min_age_days`.
+        type: string
+        required: false
+        default: ""
+      keep_sha7:
+        description: |
+          Sólo aplica en modo dirigido. Cuando está, NO borra el alias
+          `pr-{pr_number}` ni el inmutable `pr-{pr_number}-{keep_sha7}`. Útil
+          para cleanup intra-PR: el wrapper invoca este reusable después de
+          buildear el commit `<sha7>` y le pide preservar esa versión mientras
+          borra las anteriores del mismo PR.
+        type: string
+        required: false
+        default: ""
+      min_age_days:
+        description: "En modo barrido, edad mínima (en días) desde el cierre del PR para eliminar."
+        type: number
+        required: false
+        default: 7
+      dry_run:
+        description: "Si es true, solo lista lo que borraría."
+        type: boolean
+        required: false
+        default: false
+      runner_group:
+        description: |
+          Runner group de GitHub Actions donde correr el cleanup
+          (ej. `swarm-deploy-appl`, `swarm-deploy-cont`). Cada caller debe
+          declarar el suyo: el reusable no asume ninguno porque los runners
+          self-hosted del plane comparten labels y el aislamiento por BC se
+          hace exclusivamente vía runner group (ver `bounded-contexts.yml`).
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  cleanup:
+    name: Cleanup tags PR del ACR
+    runs-on:
+      group: ${{ inputs.runner_group }}
+      labels: [self-hosted, azure, swarm-deploy]
+    timeout-minutes: 30
+    steps:
+      - name: Login a Azure (Managed Identity)
+        shell: bash
+        env:
+          ACR: ${{ inputs.acr_name }}
+        run: |
+          az login --identity --output none
+          az acr login --name "$ACR"
+
+      - name: Resolver lista de repositorios
+        id: repos
+        shell: bash
+        env:
+          ACR: ${{ inputs.acr_name }}
+          PREFIX: ${{ inputs.repository_prefix }}
+          REPOS_JSON: ${{ inputs.repositories_json }}
+        run: |
+          set -euo pipefail
+          tmp_file=$(mktemp)
+          if [[ "$REPOS_JSON" != "[]" && -n "$REPOS_JSON" ]]; then
+            echo "$REPOS_JSON" | jq -r '.[]' > "$tmp_file"
+          else
+            az acr repository list -n "$ACR" -o tsv \
+              | grep "^${PREFIX}/" \
+              | sed "s|^${PREFIX}/||" > "$tmp_file" || true
+          fi
+          count=$(wc -l < "$tmp_file" | tr -d ' ')
+          echo "Repos a procesar: $count"
+          cat "$tmp_file"
+          {
+            echo "list<<EOF"
+            cat "$tmp_file"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+
+      - name: Cleanup
+        id: cleanup
+        if: steps.repos.outputs.count != '0'
+        shell: bash
+        env:
+          ACR: ${{ inputs.acr_name }}
+          PREFIX: ${{ inputs.repository_prefix }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          KEEP_SHA7: ${{ inputs.keep_sha7 }}
+          MIN_AGE_DAYS: ${{ inputs.min_age_days }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          REPO_FULL: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          REPOS: ${{ steps.repos.outputs.list }}
+        run: |
+          set -euo pipefail
+          deleted_count=0
+          deleted_file=$(mktemp)
+
+          while IFS= read -r repo; do
+            [[ -z "$repo" ]] && continue
+            full="${PREFIX}/${repo}"
+            echo "::group::Repo $full"
+
+            if [[ -n "$PR_NUMBER" ]]; then
+              tags=$(az acr repository show-tags -n "$ACR" --repository "$full" -o tsv 2>/dev/null \
+                | grep -E "^pr-${PR_NUMBER}(-.*)?$" || true)
+            else
+              tags=$(az acr repository show-tags -n "$ACR" --repository "$full" -o tsv 2>/dev/null \
+                | grep -E "^pr-[0-9]+" || true)
+            fi
+
+            for tag in $tags; do
+              # En modo dirigido, si el caller pasó keep_sha7 (cleanup intra-PR),
+              # preservar tanto el alias mutable `pr-{N}` como el inmutable
+              # `pr-{N}-{keep_sha7}`. Los demás `pr-{N}-*` (commits anteriores
+              # del mismo PR) sí se borran.
+              if [[ -n "$PR_NUMBER" && -n "$KEEP_SHA7" ]] \
+                 && { [[ "$tag" == "pr-${PR_NUMBER}" ]] \
+                      || [[ "$tag" == "pr-${PR_NUMBER}-${KEEP_SHA7}" ]]; }; then
+                echo "  Skip: $tag (preservado por keep_sha7=$KEEP_SHA7)"
+                continue
+              fi
+
+              if [[ -z "$PR_NUMBER" ]]; then
+                pr_n=$(echo "$tag" | sed -E 's/^pr-([0-9]+).*/\1/')
+                http_code=$(curl -s -o /tmp/pr.json -w "%{http_code}" \
+                  -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" \
+                  "https://api.github.com/repos/$REPO_FULL/pulls/$pr_n" || echo 000)
+
+                if [[ "$http_code" != "200" ]]; then
+                  echo "  Skip: $tag (PR #$pr_n no encontrado, HTTP $http_code)"
+                  continue
+                fi
+                state=$(jq -r '.state' /tmp/pr.json)
+                closed_at=$(jq -r '.closed_at' /tmp/pr.json)
+
+                if [[ "$state" == "open" ]]; then
+                  echo "  Skip: $tag (PR #$pr_n abierto)"
+                  continue
+                fi
+                if [[ -n "$closed_at" && "$closed_at" != "null" ]]; then
+                  closed_epoch=$(date -d "$closed_at" +%s 2>/dev/null || echo 0)
+                  now_epoch=$(date +%s)
+                  age_days=$(( (now_epoch - closed_epoch) / 86400 ))
+                  if (( age_days < MIN_AGE_DAYS )); then
+                    echo "  Skip: $tag (PR #$pr_n cerrado hace $age_days días < $MIN_AGE_DAYS)"
+                    continue
+                  fi
+                fi
+              fi
+
+              if [[ "$DRY_RUN" == "true" ]]; then
+                echo "  [DRY-RUN] borraría: ${full}:${tag}"
+              else
+                echo "  Borrando: ${full}:${tag}"
+                # ACR borra el manifest subyacente cuando se elimina su último
+                # tag, lo que tumba en cascada otros tags que apuntaran al mismo
+                # manifest (ej.: alias `pr-N` + inmutable `pr-N-<sha7>` sobre el
+                # mismo build). Tratamos `TagNotFound` como éxito idempotente:
+                # el estado deseado (tag inexistente) ya se logró.
+                if ! err=$(az acr repository delete -n "$ACR" --image "${full}:${tag}" --yes 2>&1 >/dev/null); then
+                  if grep -qiE "(specified tag does not exist|TagNotFound)" <<< "$err"; then
+                    echo "    (ya no existe — manifest borrado en cascada por un tag anterior)"
+                  else
+                    echo "::error::Fallo al borrar ${full}:${tag}: $err"
+                    exit 1
+                  fi
+                fi
+              fi
+              echo "- \`${full}:${tag}\`" >> "$deleted_file"
+              deleted_count=$((deleted_count + 1))
+            done
+            echo "::endgroup::"
+          done <<< "$REPOS"
+
+          echo "count=$deleted_count" >> "$GITHUB_OUTPUT"
+          {
+            echo "list<<EOF"
+            cat "$deleted_file" 2>/dev/null || true
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resumen
+        if: always()
+        shell: bash
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          MIN_AGE_DAYS: ${{ inputs.min_age_days }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          COUNT: ${{ steps.cleanup.outputs.count || 0 }}
+          DETAIL: ${{ steps.cleanup.outputs.list }}
+        run: |
+          if [[ -n "$PR_NUMBER" ]]; then
+            mode="PR #$PR_NUMBER"
+          else
+            mode="Barrido (PRs cerrados >$MIN_AGE_DAYS días)"
+          fi
+          {
+            echo "## Cleanup ACR"
+            echo ""
+            echo "- Modo: $mode"
+            echo "- Dry-run: \`$DRY_RUN\`"
+            echo "- Tags eliminados: **$COUNT**"
+            if [[ -n "$DETAIL" ]]; then
+              echo ""
+              echo "### Detalle"
+              echo "$DETAIL"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

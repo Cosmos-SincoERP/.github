@@ -233,8 +233,8 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 
 #### D.7 — Reusable workflows centralizados
 - **Decisión**: Aplicar — Fase 1.
-- **Configuración**: documentar que nuevos workflows para los stacks cubiertos (.NET, Bun/Node, Docker Swarm, NuGet) **deben invocar** los reusables de `Cosmos-SincoERP/Cosmos.PlatformWorkflows@v1`. Workflows existentes se migran oportunistamente.
-- **Justificación**: aprovecha lo construido; reduce drift y variabilidad entre repos.
+- **Configuración**: documentar que nuevos workflows para los stacks cubiertos (.NET, Bun/Node, Docker Swarm, NuGet) **deben invocar** los reusables de `Cosmos-SincoERP/.github@v1` (migrados desde `Cosmos.PlatformWorkflows` en mayo 2026 — el repo origen se renombra a `Cosmos.AgentSkills` y conserva las skills de Claude). Path nuevo: `uses: Cosmos-SincoERP/.github/.github/workflows/_reusable-<name>.yml@v1`. Workflows existentes se migran vía el sync workflow (ver §E.3, mismo PR por repo consumidor).
+- **Justificación**: aprovecha lo construido; reduce drift y variabilidad entre repos. La consolidación en `.github` alinea con la convención de GitHub (community-health + reusables org-wide en el repo especial) y permite el sync automatizado.
 
 #### D.8 — Concurrency control
 - **Decisión**: Aplicar como buena práctica documentada — Fase 1.
@@ -245,7 +245,7 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 
 #### D.9 — OIDC / Managed Identity para deploys
 - **Decisión**: Aplicar como **recomendación fuerte** (no enforcement técnico) — Fase 1.
-- **Configuración**: documentar en `0002` que ningún deploy nuevo a Azure (u otro cloud) debe usar secretos long-lived (service principal con secret persistente, access key, etc.). El estándar es Managed Identity en runners self-hosted o Workload Identity Federation (OIDC) desde runners hosted. `Cosmos.PlatformWorkflows` ya implementa esto en sus reusables de deploy.
+- **Configuración**: documentar en `0002` que ningún deploy nuevo a Azure (u otro cloud) debe usar secretos long-lived (service principal con secret persistente, access key, etc.). El estándar es Managed Identity en runners self-hosted o Workload Identity Federation (OIDC) desde runners hosted. Los reusables de deploy (hoy en `Cosmos-SincoERP/.github` tras la migración de mayo 2026) ya implementan esto.
 - **Mecanismo de aplicación**: revisión en code review de PRs que introducen nuevos deploys o nuevos secretos. Si en el futuro se requiere enforcement automatizado, evaluar un compliance check en CI o subir a una capa de "obligatorio" en un ADR posterior.
 - **Justificación**: la práctica ya existe de facto; documentarla como recomendación fuerte fija el estándar para nuevos deploys y para revisión, sin introducir gates técnicos que requieran mantenimiento. Deploys con secrets long-lived existentes (si los hay) se migran cuando se toquen.
 
@@ -266,14 +266,15 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 - **Justificación**: cierra el loop detección→fix vía PRs automáticos. Bajo flujo IA con auto-merge habilitado (C.4) y tests verdes, mantiene el portafolio al día con baja carga humana.
 
 #### E.3 — Dependabot version updates
-- **Decisión**: Aplicar — Fase 1, plantillas por stack en `Cosmos-SincoERP/.github`.
-- **Configuración**: crear plantillas `dependabot-<stack>.yml` (`.NET`, `node-bun`, `docker`, `terraform`, `github-actions`). Cada repo vendor-copia la(s) que aplican. Cadencia semanal; usar `groups:` para evitar PR storm.
+- **Decisión**: Aplicar — Fase 1, plantillas por stack en `Cosmos-SincoERP/.github`, **propagación automatizada vía sync workflow**.
+- **Configuración**: plantillas canónicas en `Cosmos-SincoERP/.github/docs/templates/dependabot-<stack>.yml` (`.NET`, `node-bun`, `docker`, `terraform`, `github-actions`). Cada repo consumidor recibe la(s) que aplican como `.github/dependabot.yml` con header marcador `Managed by Cosmos-SincoERP/.github — do not edit manually`. Cadencia semanal; usar `groups:` para evitar PR storm.
+- **Mecanismo de propagación (refinado 2026-05-27)**: `Cosmos-SincoERP/.github/.github/workflows/sync-governance.yml` lee `docs/repos-manifest.yml` (mapa repo→stack→overrides) y, al cambiar una plantilla o el manifest, abre un PR en cada repo consumidor con el nuevo render. Drift se reporta semanalmente vía `drift-check-governance.yml` en una issue actualizable. Override conocido: `overrides.terraform_directory` en repos `*.Infraestructura` para apuntar al subdir `/infra`. El primer rollout también arrastra la migración de `uses:` al nuevo path de reusables (ver D.7), en el mismo PR por consumidor.
 - **Política de agrupación (refinada 2026-05-26 tras observar 31 PRs abiertos en el bootstrap inicial)**: bundle agresivo por ecosystem con `groups` que incluya `patterns: ["*"]` y `applies-to: version-updates`. Mantener subgrupos semánticos cuando aporten claridad de revisión (NuGet: `microsoft` + `tests` + `all-other`; npm/bun: `types` + `eslint` + `all-other`). Para ecosystems sin subgrupos previos (docker, terraform, github-actions): un único grupo `all`. `open-pull-requests-limit: 5` (suficiente con bundles). `schedule.day` distribuido por ecosystem para descargar CI: NuGet=monday, npm/bun=tuesday, docker=wednesday, terraform=thursday, github-actions=friday. Security updates (E.2) son canal independiente y no se ven afectados por estos límites — siguen llegando 1-PR-por-CVE con su propio límite interno de 10.
-- **Justificación**: mantiene dependencias al día proactivamente. Las plantillas estandarizan la configuración entre repos.
+- **Justificación**: mantiene dependencias al día proactivamente. Plantillas + sync centralizado convierten cambios globales (ej. cadencia weekly→monthly) en un solo PR aquí, no N PRs manuales en N repos. Drift detectable.
 
 #### E.4 — Dependency review action en PRs
 - **Decisión**: Aplicar a nivel repo (vía reusable) — Fase 1, con **Trivy OSS** como herramienta (no `actions/dependency-review-action`).
-- **Configuración**: `_reusable-dependency-review.yml` en `Cosmos.PlatformWorkflows` corriendo `aquasecurity/trivy-action` con `scan-type: fs` y `severity: HIGH,CRITICAL` sobre el repo del PR. Cada repo lo invoca vía `security-checks.yml` y lo marca como required en su Ruleset (cuando D.1 se cierre con un mecanismo unificado de required checks).
+- **Configuración**: `_reusable-dependency-review.yml` en `Cosmos-SincoERP/.github` (migrado desde `Cosmos.PlatformWorkflows` por la migración E.3/D.7 de mayo 2026) corriendo `aquasecurity/trivy-action` con `scan-type: fs` y `severity: HIGH,CRITICAL` sobre el repo del PR. Cada repo lo invoca vía `security-checks.yml` y lo marca como required en su Ruleset (cuando D.1 se cierre con un mecanismo unificado de required checks).
 - **Elección de herramienta**: Trivy sobre `actions/dependency-review-action`. La acción de GitHub **requiere GitHub Advanced Security (GHAS) en repos privados** (verificado empíricamente 2026-05-26: *"Dependency review is not supported on this repository. Please ensure that Dependency graph is enabled along with GitHub Advanced Security"*). GHAS solo está disponible en plan Enterprise. Trivy OSS es verified creator en Marketplace, sin licencia, mantenido activamente por Aqua Security. Cobertura equivalente para el caso de uso principal (CVE en deps), con bonus: también escanea Dockerfiles, IaC (Terraform, Kubernetes), y otros stacks no .NET.
 - **Pinning**: Trivy no publica tag mayor móvil (`@v0` no existe, solo tags específicos como `@v0.36.0`). Se pinea por SHA exacto con comentario de versión. Dependabot `github-actions` ecosystem mantiene la SHA actualizada.
 - **Trade-off vs `dependency-review-action`**: pierdes la integración nativa con el dependency graph y los comentarios automáticos en el PR. Ganas: funciona en Team, sin coste, cobertura más amplia. Reevaluar en [[0003]] al activarse GHAS si se decide.
@@ -591,10 +592,10 @@ Ver Apéndice A4 — `scripts/bootstrap-repo.sh`.
 | C.6 Auto-delete branch | flag `delete_branch_on_merge` (incluido en bootstrap) |
 | D.1 Status checks específicos del stack | cada repo configura sus required checks en su propio ruleset o branch protection |
 | D.3 Pinning a SHA | mantenido por Dependabot `github-actions` ecosystem en `dependabot.yml` |
-| D.7 Reusables de `Cosmos.PlatformWorkflows` | cada repo invoca con `uses: ...@v1`; convención documentada |
+| D.7 Reusables de `Cosmos-SincoERP/.github` | cada repo invoca con `uses: Cosmos-SincoERP/.github/.github/workflows/_reusable-<name>.yml@v1`; sync workflow mantiene `uses:` actualizado tras renames/moves |
 | D.8 Concurrency control | convención + presente en los reusables |
 | D.9 OIDC / MI | configurado en los reusables; no requiere replicación por repo |
-| E.3 `dependabot.yml` por stack | plantilla en `.github/docs/templates/`; copia manual o vía bootstrap |
+| E.3 `dependabot.yml` por stack | plantilla en `.github/docs/templates/`; propagado por `sync-governance.yml` con manifest en `docs/repos-manifest.yml` |
 | E.4 Dependency review check | cada repo invoca `_reusable-dependency-review.yml` y lo marca como required |
 | E.6 Secret scan check | cada repo invoca `_reusable-secret-scan.yml` y lo marca como required |
 
