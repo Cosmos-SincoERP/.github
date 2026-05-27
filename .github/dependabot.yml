@@ -1,0 +1,17 @@
+# ─────────────────────────────────────────────────────────────────
+# El repo .github es el fuente de los templates de dependabot; este
+# archivo se mantiene a mano para mantener este repo en baseline.
+# Si los templates cambian su estructura, actualizar también aquí.
+# ─────────────────────────────────────────────────────────────────
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "friday"
+    open-pull-requests-limit: 5
+    groups:
+      all:
+        applies-to: version-updates
+        patterns: ["*"]

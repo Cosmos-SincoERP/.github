@@ -9,6 +9,7 @@ on:
     branches: [main]
     paths:
       - 'docs/templates/dependabot-*.yml'
+      - 'docs/templates/security-checks.yml'
       - 'docs/repos-manifest.yml'
       - '.github/workflows/_reusable-*.yml'
       - '.github/scripts/sync-governance.sh'
@@ -30,6 +31,7 @@ on:
         options:
           - all
           - dependabot
+          - security-checks
           - uses
 
 permissions:
