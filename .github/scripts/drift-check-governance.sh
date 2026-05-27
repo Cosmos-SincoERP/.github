@@ -19,10 +19,30 @@ log() { echo "[$(date +%H:%M:%S)] $*"; }
 render_dependabot() {
   local stack="$1"
   local terraform_directory="${2:-/}"
+  local docker_dirs_csv="${3:-}"
   local template="$TEMPLATES_DIR/dependabot-$stack.yml"
   [ -f "$template" ] || { echo ""; return; }
   # Delimitador `#` (no `|`) porque el patrón contiene un `|` literal.
   sed "s#{{ terraform_directory | default('/') }}#$terraform_directory#g" "$template"
+
+  # Appendear bloque docker si hay docker_directories en overrides del manifest.
+  if [ -n "$docker_dirs_csv" ]; then
+    printf '\n'
+    printf '  - package-ecosystem: "docker"\n'
+    printf '    directories:\n'
+    IFS=',' read -ra DOCKER_DIRS <<< "$docker_dirs_csv"
+    for d in "${DOCKER_DIRS[@]}"; do
+      printf '      - "%s"\n' "$d"
+    done
+    printf '    schedule:\n'
+    printf '      interval: "weekly"\n'
+    printf '      day: "wednesday"\n'
+    printf '    open-pull-requests-limit: 5\n'
+    printf '    groups:\n'
+    printf '      all:\n'
+    printf '        applies-to: version-updates\n'
+    printf '        patterns: ["*"]\n'
+  fi
 }
 
 fetch_remote_file() {
@@ -44,7 +64,7 @@ declare -a DRIFT_REUSABLES_STALE=()
 declare -a DRIFT_ORPHAN_REPOS=()
 
 check_repo() {
-  local name="$1" stack="$2" consumes="$3" terraform_directory="$4"
+  local name="$1" stack="$2" consumes="$3" terraform_directory="$4" docker_dirs_csv="${5:-}"
   local owner_repo="$ORG/$name"
 
   log "Checking $owner_repo"
@@ -57,7 +77,7 @@ check_repo() {
   # 1. dependabot drift
   if [[ ",$consumes," == *,dependabot,* ]]; then
     local desired current
-    desired="$(render_dependabot "$stack" "$terraform_directory")"
+    desired="$(render_dependabot "$stack" "$terraform_directory" "$docker_dirs_csv")"
     current="$(fetch_remote_file "$owner_repo" ".github/dependabot.yml")"
     if [ -n "$desired" ] && [ "$desired" != "$current" ]; then
       DRIFT_DEPENDABOT+=("- [\`$owner_repo\`](https://github.com/$owner_repo/blob/main/.github/dependabot.yml) — drift detectado (stack=\`$stack\`)")
@@ -168,12 +188,13 @@ main() {
   repos_json="$(yq eval -o=json '.repos' "$MANIFEST")"
 
   while IFS= read -r entry; do
-    local name stack consumes td
+    local name stack consumes td dd
     name="$(echo "$entry" | jq -r '.name')"
     stack="$(echo "$entry" | jq -r '.stack')"
     consumes="$(echo "$entry" | jq -r '.consumes | join(",")')"
     td="$(echo "$entry" | jq -r '.overrides.terraform_directory // "/"')"
-    check_repo "$name" "$stack" "$consumes" "$td"
+    dd="$(echo "$entry" | jq -r '.overrides.docker_directories // [] | join(",")')"
+    check_repo "$name" "$stack" "$consumes" "$td" "$dd"
   done < <(echo "$repos_json" | jq -c '.[]')
 
   check_orphans
