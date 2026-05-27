@@ -58,4 +58,4 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 
 ## Repositorios relacionados
 
-- [`Cosmos-SincoERP/Cosmos.PlatformWorkflows`](https://github.com/Cosmos-SincoERP/Cosmos.PlatformWorkflows) — origen histórico de los reusables; ahora aloja solo las skills de Claude (`onboard-dotnet-repo`, `provision-bc-infra`) y el catálogo de bounded contexts. Pendiente de renombrar a `Cosmos.AgentSkills`.
+- [`Cosmos-SincoERP/Cosmos.AgentSkills`](https://github.com/Cosmos-SincoERP/Cosmos.AgentSkills) — ex-`Cosmos.PlatformWorkflows`; origen histórico de los reusables. Renombrado tras la migración (mayo 2026). Ahora aloja solo las skills de Claude (`onboard-dotnet-repo`, `provision-bc-infra`) y el catálogo de bounded contexts.
