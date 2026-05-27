@@ -240,12 +240,6 @@ repos:
     stack: github-actions
     consumes: [reusables, dependabot]
 
-  - name: Observabilidad
-    stack: github-actions
-    consumes: [reusables, dependabot]
-    # Repo recién creado (2026-05-27, vacío). Baseline mínimo
-    # mientras se define stack final cuando tenga contenido.
-
 # ─────────────────────────────────────────────────────────────────
 # Opt-out explícito. Repos en la org que NO entran al sync.
 # Cada entrada requiere `reason:` justificando.
@@ -256,3 +250,6 @@ skip:
 
   - name: Cosmos.Terceros
     reason: "default branch ≠ main (feature/dominio); excepción documentada en .github#16"
+
+  - name: Observabilidad
+    reason: "repo vacío (size=0, sin commits); sync no puede clonar. Reclasificar a repos: cuando tenga contenido y stack identificable"
