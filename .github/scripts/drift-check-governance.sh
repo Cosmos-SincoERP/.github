@@ -21,7 +21,8 @@ render_dependabot() {
   local terraform_directory="${2:-/}"
   local template="$TEMPLATES_DIR/dependabot-$stack.yml"
   [ -f "$template" ] || { echo ""; return; }
-  sed "s|{{ terraform_directory | default('/') }}|$terraform_directory|g" "$template"
+  # Delimitador `#` (no `|`) porque el patrón contiene un `|` literal.
+  sed "s#{{ terraform_directory | default('/') }}#$terraform_directory#g" "$template"
 }
 
 fetch_remote_file() {
