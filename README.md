@@ -8,7 +8,7 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 
 3. **Documentación de gobernanza operacional + sync automatizado**. ADRs sobre políticas de repositorios, gobierno de la organización y prácticas de plataforma en `docs/adr/`. Manifest de repos consumidores en `docs/repos-manifest.yml`. Sync workflow (`sync-governance.yml`) propaga cambios de plantillas dependabot y referencias `uses:` a los repos consumidores automáticamente.
 
-> **Visibilidad**: este repo está planeado para ser **privado** tras la migración E.3/D.7. Los community-health defaults siguen funcionando para repos privados del mismo owner. La página pública de comunidad de la organización deja de mostrarse — verificar con admin antes de ejecutar el cambio.
+> **Visibilidad**: este repo es **público**. Los reusables y la documentación de gobernanza no contienen información operacional sensible (ADRs son guías de decisión, no de implementación; los reusables reciben sus valores específicos por inputs). Mantenerlo público permite que Dependabot en los repos consumidores resuelva las referencias `uses: org/.github/...@v1` sin requerir PAT ni configuración adicional.
 
 ## Estructura
 

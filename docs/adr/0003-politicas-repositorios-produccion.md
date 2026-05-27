@@ -8,11 +8,11 @@ informed: []
 
 # 0003 — Políticas de repositorios: ambiente de producción
 
-> **Estado**: este ADR está en `proposed` y se mantiene así hasta que Cosmos-SincoERP materialice un ambiente de producción (servicios desplegados de cara a clientes, datos productivos, requerimientos de disponibilidad/SLA). En ese momento se toman las decisiones marcadas como pendientes y el ADR pasa a `accepted`.
+> **Estado**: este ADR está en `proposed` y se mantiene así hasta que se materialice un ambiente de producción (servicios desplegados de cara a clientes, datos productivos, requerimientos de disponibilidad/SLA). En ese momento se toman las decisiones marcadas como pendientes y el ADR pasa a `accepted`.
 
 ## Contexto y problema
 
-Hereda el marco general de [[0001]] y el baseline de desarrollo de [[0002]]. Hoy Cosmos-SincoERP no tiene ambiente de producción; las decisiones de gobernanza incluidas en [[0002]] son suficientes para dev pero quedan abiertas para cuando exista prod.
+Hereda el marco general de [[0001]] y el baseline de desarrollo de [[0002]]. Hoy no hay ambiente de producción; las decisiones de gobernanza incluidas en [[0002]] son suficientes para dev pero quedan abiertas para cuando exista prod.
 
 Este ADR cubre:
 1. Las prácticas del catálogo de [[0001]] que [[0002]] difirió a producción.
@@ -53,11 +53,11 @@ Drivers nuevos potencialmente relevantes:
 
 #### A.3 — Política de creación de repositorios
 - **Estado**: diferida desde [[0002]] por limitación del plan Team.
-- **Origen**: la combinación deseada (`members_can_create_public_repositories=false; members_can_create_private_repositories=true`) no es expresable bajo Team; la API rechaza con HTTP 422. El único toggle granular disponible es `members_can_create_repositories` con valores `all`, `private` (no aplicable en Team) o `none`. Verificado empíricamente 2026-05-26.
+- **Origen**: la combinación deseada (restringir creación pública preservando creación privada) no es expresable bajo Team; los toggles disponibles no permiten esa combinación.
 - **Opciones de tratamiento** post-upgrade Enterprise:
-  - Activar `members_can_create_public_repositories=false` (objetivo original de [[0002]]).
+  - Activar restricción de creación pública conservando creación privada.
   - Restringir creación de cualquier repo a un team aprobado (más estricto).
-  - Mantener `all` (estado actual) si el riesgo se considera tolerable bajo controles compensatorios.
+  - Mantener el estado actual si el riesgo se considera tolerable bajo controles compensatorios.
 - **Condición de activación**: upgrade a plan Enterprise.
 
 #### B.6 — Require signed commits
@@ -73,13 +73,13 @@ Drivers nuevos potencialmente relevantes:
 - **Opciones de tratamiento**:
   - Activar Tag ruleset org-wide protegiendo `v*` y `release-*` contra creación/borrado por actores no autorizados.
   - Activar solo en repos con tier `critical` o que publiquen releases.
-  - Activar de forma parcial primero en `Cosmos.PlatformWorkflows` (donde `@v1` ya es referenciado por todos los consumidores).
-- **Condición de activación**: cuando exista proceso de release con tags que sirvan a despliegue productivo, o ya antes para proteger los `@v1` de los reusables internos.
+  - Activar de forma parcial primero donde haya tags consumidos por toda la organización (p. ej. reusables internos referenciados por todos los consumidores).
+- **Condición de activación**: cuando exista proceso de release con tags que sirvan a despliegue productivo, o ya antes para proteger los tags de los reusables internos.
 
 #### D.2 — Environments con required reviewers
 - **Estado**: pendiente de decidir.
 - **Opciones de tratamiento**:
-  - Crear environments `staging` y `production` por repo con `required_reviewers` (team de plataforma + dueños del servicio) + wait timer + branch restrictions.
+  - Crear environments `staging` y `production` por repo con required reviewers + wait timer + branch restrictions.
   - Crear solo `production` con reviewers; `staging` sin reviewers.
   - No usar environments; gate humano se da vía aprobación de PR.
 - **Condición de activación**: cuando exista despliegue a un ambiente productivo.
@@ -92,17 +92,17 @@ Drivers nuevos potencialmente relevantes:
 - **Condición de activación**: upgrade a Enterprise.
 
 #### E.6 — Secret scanning + push protection en privados (GHAS)
-- **Estado**: mitigado en [[0002]] con reusable `gitleaks`. Reevaluar si se sube a Enterprise + GHAS.
+- **Estado**: mitigado en [[0002]] con reusable OSS. Reevaluar si se sube a Enterprise + GHAS.
 - **Opciones de tratamiento** post-upgrade:
-  - Activar GHAS secret scanning + push protection nativo; retirar el reusable `_reusable-secret-scan.yml` o mantenerlo como defensa en profundidad.
+  - Activar GHAS secret scanning + push protection nativo; retirar el reusable OSS o mantenerlo como defensa en profundidad.
   - Mantener ambos (defensa en profundidad).
 - **Condición de activación**: upgrade a Enterprise + GHAS.
 
 #### E.7 — Code scanning / CodeQL
 - **Estado**: pendiente de decidir.
 - **Opciones de tratamiento**:
-  - Activar CodeQL en los 5 repos públicos (gratis); diferir privados.
-  - Reusable `_reusable-codeql.yml` para públicos + `_reusable-semgrep.yml` (OSS rules) para privados.
+  - Activar CodeQL en los repos públicos (gratis); diferir privados.
+  - Reusables `_reusable-codeql.yml` para públicos + `_reusable-semgrep.yml` (OSS rules) para privados.
   - Esperar GHAS para cobertura completa pública + privada con CodeQL nativo.
   - Descartar SAST por completo (decisión explícita).
 - **Condición de activación**: revisar al materializarse producción O al evaluar upgrade Enterprise/GHAS.
@@ -110,7 +110,7 @@ Drivers nuevos potencialmente relevantes:
 #### E.8 — Private vulnerability reporting
 - **Estado**: pendiente de decidir.
 - **Opciones de tratamiento**:
-  - Activar org-wide (Settings → Code security → PVR → Enable for all).
+  - Activar org-wide.
   - Activar solo en repos públicos.
   - Mantener diferido.
 - **Condición de activación**: cuando se decida activar también E.9 (canal documentado en SECURITY.md).
@@ -118,7 +118,7 @@ Drivers nuevos potencialmente relevantes:
 #### E.9 — `SECURITY.md`
 - **Estado**: pendiente de decidir.
 - **Opciones de tratamiento**:
-  - Plantilla en `Cosmos-SincoERP/.github` con canal de reporte (PVR si E.8 activado, mail dedicado en caso contrario), versiones soportadas, política de respuesta.
+  - Plantilla en el repo `.github` de la org con canal de reporte (PVR si E.8 activado, mail dedicado en caso contrario), versiones soportadas, política de respuesta.
   - Solo en repos públicos.
   - Mantener descartado.
 - **Condición de activación**: conjunta con E.8.
@@ -126,7 +126,7 @@ Drivers nuevos potencialmente relevantes:
 #### E.11 — SSO / SAML
 - **Estado**: descartada para Team. Reevaluar si se sube a Enterprise.
 - **Opciones de tratamiento** post-upgrade:
-  - Integrar con el IdP corporativo (Azure AD/Entra) para autenticación de miembros.
+  - Integrar con el IdP corporativo para autenticación de miembros.
   - Mantener gestión manual (rara vez justificable post-upgrade).
 - **Condición de activación**: upgrade a Enterprise.
 
@@ -140,8 +140,8 @@ Drivers nuevos potencialmente relevantes:
   - `production | non-production` (dos niveles, semántico)
   - Otras combinaciones
 - **Otras custom properties potencialmente útiles**:
-  - `stack`: `dotnet | node-bun | terraform | docker | mixed` — para targeting de reusables o políticas específicas por stack.
-  - `domain`: dominio funcional (`obligaciones-por-pagar`, `terceros`, `direcciones`, etc.) — para reporting y CODEOWNERS.
+  - `stack`: para targeting de reusables o políticas específicas por stack.
+  - `domain`: dominio funcional, para reporting y CODEOWNERS.
 - **Condición de activación**: cuando la diferenciación por tier sea funcionalmente necesaria (típicamente al materializarse producción; podría ser antes si surge razón específica).
 
 ### Posible cambio: subir N approvals para repos críticos (B.2)
@@ -160,86 +160,6 @@ Drivers nuevos potencialmente relevantes:
 
 ---
 
-## Guía de implementación — Fase 2
-
-> Se construye cuando se acepta este ADR. Esquema previsto:
-
-### 1. Definir y aplicar custom properties
-
-```bash
-# Schema (valores específicos a confirmar al activar)
-gh api -X PATCH orgs/Cosmos-SincoERP/properties/schema \
-  --input apendices/custom-properties-schema.json
-```
-
-### 2. Clasificar el portafolio
-
-Asignar valores a cada repo:
-
-```bash
-gh api -X PATCH orgs/Cosmos-SincoERP/properties/values \
-  --input apendices/repo-classifications.json
-```
-
-### 3. Crear/actualizar Rulesets con targeting por tier
-
-```bash
-# Ruleset adicional para tier `critical`
-gh api -X POST orgs/Cosmos-SincoERP/rulesets \
-  --input apendices/ruleset-tier-critical.json
-```
-
-### 4. Crear environments productivos por repo
-
-Para cada repo del tier elegido:
-
-```bash
-gh api -X PUT repos/Cosmos-SincoERP/<repo>/environments/production \
-  -F 'reviewers[].type=Team' \
-  -F 'reviewers[].id=<team-id>' \
-  -F wait_timer=5 \
-  -F prevent_self_review=true
-```
-
-### 5. Tag protection rules
-
-```bash
-gh api -X POST orgs/Cosmos-SincoERP/rulesets \
-  --input apendices/ruleset-tag-protection.json
-```
-
-### 6. Activar required signed commits (opt-in)
-
-Comenzar con repos `critical`. Documentar setup de GPG/SSH commit signing para devs y agentes IA.
-
-### 7. Activar private vulnerability reporting + SECURITY.md
-
-Si se decide:
-
-```bash
-gh api -X PATCH orgs/Cosmos-SincoERP \
-  -F security_and_analysis.private_vulnerability_reporting.enabled=true
-```
-
-Commitear `SECURITY.md` en `Cosmos-SincoERP/.github`.
-
-### 8. (Si se sube a Enterprise + GHAS)
-
-- Activar secret scanning + push protection en privados.
-- Activar CodeQL en privados.
-- Configurar required workflows org-wide.
-- Integrar SAML SSO con el IdP corporativo.
-
-### 9. Plan de comunicación al equipo
-
-Anunciar:
-- Qué cambia por tier.
-- Cómo se clasifica un repo (criterios).
-- Cómo solicitar reclasificación.
-- Setup requerido (signed commits si aplica).
-
----
-
 ## Consideración: upgrade a Enterprise + GHAS
 
 **No es decisión que se tome en este ADR**, solo información para futura evaluación.
@@ -248,19 +168,19 @@ Capacidades que se desbloquean:
 
 | Capacidad | Hoy en Team (mitigación) |
 |---|---|
-| Secret scanning + push protection en repos privados | `_reusable-secret-scan.yml` con gitleaks (E.6 en [[0002]]) + push rulesets de paths (B.12) |
-| CodeQL en repos privados | Diferido (E.7) — alternativa OSS Semgrep si se requiere antes |
+| Secret scanning + push protection en repos privados | Reusable OSS (E.6 en [[0002]]) + push rulesets de paths (B.12) |
+| CodeQL en repos privados | Diferido (E.7) — alternativa OSS si se requiere antes |
 | Required workflows org-wide | Status checks bloqueantes vía Ruleset + reusables consumidos manualmente (D.1 + D.7) |
 | SAML / SSO | Gestión manual de identidades en GitHub |
 | Audit log streaming | Retención y consulta limitadas a UI/API estándar |
 
 Señales que harían que evaluar el upgrade tenga sentido:
-- Crecimiento del equipo (más allá de ~30 devs activos).
+- Crecimiento del equipo más allá del rango donde la gestión manual de identidades es viable.
 - Requisitos contractuales de clientes (SOC 2, ISO 27001, similares).
 - Sensibilidad alta de datos manejados en producción.
 - Incidentes de secretos filtrados que las mitigaciones OSS no atajaron.
 - Necesidad de auditoría centralizada para compliance.
-- Coste anual estimado de las mitigaciones manuales (runner-minutes, mantenimiento de gitleaks/Semgrep) superando el delta de costo de Enterprise + GHAS.
+- Coste anual estimado de las mitigaciones manuales superando el delta de costo de Enterprise + GHAS.
 
 ## Consecuencias
 
@@ -271,16 +191,6 @@ Señales que harían que evaluar el upgrade tenga sentido:
 > - ⚠️ Operativo: clasificación inicial del portafolio requiere alineación con dueños de servicio.
 > - ⚠️ Subir approvals + signed commits en `critical` introduce fricción notable; gestionar comunicación.
 > - ⚠️ Si no se sube a Enterprise, secret scanning y CodeQL en privados siguen como mitigaciones manuales.
-
-## Apéndices
-
-> A redactar al activar el ADR. Esquema previsto:
->
-> - **A1**: JSON schema de custom properties.
-> - **A2**: JSON Ruleset incremental targeting `repository_property = critical`.
-> - **A3**: JSON Tag protection ruleset.
-> - **A4**: Plantilla `SECURITY.md` (si E.9 se activa).
-> - **A5**: Guía de setup de signed commits para devs y agentes IA (si B.6 se activa).
 
 ## Referencias
 
