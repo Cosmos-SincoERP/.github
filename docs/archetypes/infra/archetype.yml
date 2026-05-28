@@ -10,9 +10,10 @@ bc_key_required: true
 overrides:
   terraform_directory: /infra
 
-# Solo los checks de seguridad son reusables estables. El check de `terraform plan`
-# lo expone el wrapper scaffoldeado (pr-plan.yml); añadirlo aquí tras verificar su
-# nombre exacto en el primer PR.
+# Contextos en formato `<job-caller> / <job-del-reusable>` (confirmado en PR #89).
+# El `terraform plan` de pr-plan.yml es un job normal (no reusable): su contexto sería
+# `plan`. Se deja fuera por ahora (requerirlo bloquea el merge si el plan tarda/falla por
+# backend sin configurar); añadir `plan` aquí cuando el backend esté operativo.
 required_checks:
-  - "Dependency Review (trivy)"
-  - "Secret Scan (trufflehog)"
+  - "dependency-review / trivy"
+  - "secret-scan / trufflehog"

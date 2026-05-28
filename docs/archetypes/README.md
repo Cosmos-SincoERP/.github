@@ -29,7 +29,7 @@ docs/archetypes/<arquetipo>/
 | `consumes` | list | Qué consume del sync. Normalmente `[reusables, dependabot]`. |
 | `bc_key_required` | bool | Si `true`, el workflow exige el input `bc_key` (clave del bounded context, ej. `oxp`). |
 | `overrides` | map | `terraform_directory` / `docker_directories` por defecto del scaffold. Pueden contener `{{...}}`. |
-| `required_checks` | list | Strings EXACTOS de los checks que el repo-level ruleset marca required. |
+| `required_checks` | list | Contextos EXACTOS de los checks que el repo-level ruleset marca required, en formato `<job-caller> / <job-del-reusable>` (ver nota abajo). |
 
 ## Sustitución de placeholders
 
@@ -42,6 +42,9 @@ docs/archetypes/<arquetipo>/
 Las variables de runtime de los workflows (`${ACR_LOGIN_SERVER}`, `${IMAGE_TAG}`,
 `${VAR_NAME}` de `env.js.tmpl`, etc.) usan sintaxis `${...}` y **no se tocan**.
 
-> ⚠️ `required_checks` es **contrato frágil**: el string debe coincidir EXACTO
-> con lo que GitHub reporta. Tras el primer PR de un repo nuevo, verificar en la
-> caja de merge que los nombres calzan; si no, corregir aquí (única fuente).
+> ⚠️ `required_checks` es **contrato frágil**: el contexto debe coincidir EXACTO
+> con lo que GitHub reporta. Para checks que vienen de un workflow reusable, el contexto
+> es `<job-caller> / <job-del-reusable>` — **no** el `name:` raíz del reusable. Ej.: el job
+> `dependency-review` que invoca el reusable cuyo job interno es `trivy` reporta como
+> `dependency-review / trivy` (confirmado en PR #89). Para un job normal (no reusable), el
+> contexto es el nombre del job. Si renombras un job en un wrapper, actualiza aquí.

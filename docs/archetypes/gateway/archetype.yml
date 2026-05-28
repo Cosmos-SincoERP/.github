@@ -11,7 +11,9 @@ overrides:
   docker_directories:
     - "/"
 
+# Contextos en formato `<job-caller> / <job-del-reusable>` (confirmado en PR #89).
+# El build de Docker queda fuera (varios sub-jobs, uno condicional); dependency-review
+# ya escanea el Dockerfile. El gateway no tiene tests.
 required_checks:
-  - "Build & Push Docker (reusable)"
-  - "Dependency Review (trivy)"
-  - "Secret Scan (trufflehog)"
+  - "dependency-review / trivy"
+  - "secret-scan / trufflehog"

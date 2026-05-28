@@ -9,7 +9,8 @@ bc_key_required: false
 
 overrides: {}
 
+# Contextos en formato `<job-caller> / <job-del-reusable>` (confirmado en PR #89).
 required_checks:
-  - "Tests .NET (reusable)"
-  - "Dependency Review (trivy)"
-  - "Secret Scan (trufflehog)"
+  - "tests / tests"
+  - "dependency-review / trivy"
+  - "secret-scan / trufflehog"
