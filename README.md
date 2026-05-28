@@ -91,11 +91,16 @@ Decisión de diseño en [`docs/adr/0004-creacion-automatizada-repositorios.md`](
 El flujo corre con un token de GitHub App. Respecto a los permisos que ya necesita el sync
 (Contents + Pull requests), el golden path requiere **adicionalmente** que la App tenga:
 
-- **Administration (organización)** — para crear repos.
-- **Administration (repositorio)** — para aplicar settings de merge y crear el repo-level ruleset.
-- **Workflows** — sin esto, el push inicial que toca `.github/workflows/*` es rechazado.
+- **Repository → Administration: Read & write** — crear repos (`POST /orgs/{org}/repos`),
+  aplicar settings de merge (`PATCH /repos/...`) y crear el repo-level ruleset
+  (`POST /repos/.../rulesets`). Las tres operaciones usan este mismo permiso.
+- **Repository → Workflows: Read & write** — sin esto, el push inicial que toca
+  `.github/workflows/*` es rechazado.
 - Estar en la **bypass list del ruleset org `~DEFAULT_BRANCH`** (ADR 0002 §B.1), para el
   commit inicial de `main` del repo nuevo.
+
+La instalación de la App en la org debe cubrir **todos los repos** (no un subconjunto), para
+que pueda administrar los repos recién creados.
 
 > Por blast radius, se puede usar una App separada solo-creación en vez de ampliar la del
 > sync; en ese caso, ajustar los secrets referenciados en `create-repo.yml`. Ver ADR 0004.
