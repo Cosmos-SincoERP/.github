@@ -212,8 +212,12 @@ push_initial_main() {
 register_in_manifest() {
   section "Registrar en el manifest (PR en $SELF_REPO)"
 
-  # ¿Ya está en el manifest (repos: o skip:)?
-  if yq -r '.repos[].name, .skip[].name' "$MANIFEST" | grep -qxF "$REPO_NAME"; then
+  # ¿Ya está en el manifest (repos: o skip:)? Here-string en vez de `yq | grep -q`:
+  # con `set -o pipefail`, grep -q corta el pipe y yq muere con SIGPIPE (141), lo que
+  # haría fallar el pipeline aunque el match exista.
+  local known_names
+  known_names="$(yq -r '.repos[].name, .skip[].name' "$MANIFEST")"
+  if grep -qxF "$REPO_NAME" <<< "$known_names"; then
     log "$REPO_NAME ya está en el manifest — saltando (idempotente)."
     return 0
   fi
@@ -242,8 +246,11 @@ register_in_manifest() {
   cp "$new_manifest" "$MANIFEST"
 
   # Validar que el manifest sigue siendo YAML válido y contiene la entrada.
+  # Here-string (no `yq | grep -q`) por el mismo motivo de SIGPIPE/pipefail de arriba.
   yq e '.' "$MANIFEST" >/dev/null || die "El manifest quedó inválido tras insertar la entrada."
-  yq -r '.repos[].name' "$MANIFEST" | grep -qxF "$REPO_NAME" || die "La entrada no quedó en repos:."
+  local repo_names_after
+  repo_names_after="$(yq -r '.repos[].name' "$MANIFEST")"
+  grep -qxF "$REPO_NAME" <<< "$repo_names_after" || die "La entrada no quedó en repos:."
 
   git config user.email "governance-sync@cosmos-sincoerp.local"
   git config user.name "cosmos-governance-sync[bot]"
@@ -318,9 +325,10 @@ apply_required_checks() {
     return 0
   fi
 
+  # `first // empty` en el propio jq evita un `| head -n1` que daría SIGPIPE bajo pipefail.
   local existing_id
   existing_id="$(gh api "repos/$OWNER_REPO/rulesets" \
-    --jq ".[] | select(.name==\"$RULESET_NAME\") | .id" 2>/dev/null | head -n1 || echo "")"
+    --jq "[.[] | select(.name==\"$RULESET_NAME\") | .id] | first // empty" 2>/dev/null || echo "")"
 
   if [ -n "$existing_id" ]; then
     if echo "$payload" | gh api -X PUT "repos/$OWNER_REPO/rulesets/$existing_id" --input - >/dev/null 2>&1; then
