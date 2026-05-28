@@ -1,0 +1,15 @@
+# Docker Swarm stack (dev). Placeholder scaffoldeado por el golden path.
+# Los tags de imagen los inyecta _reusable-deploy-swarm vía IMAGE_TAG_<SERVICIO>.
+# Variables disponibles: ${ACR_LOGIN_SERVER}, ${REPOSITORY_PREFIX}.
+#
+# TODO({{REPO_NAME}}): definir los servicios reales, redes, secrets y healthchecks.
+version: "3.8"
+
+services:
+  comandos-api:
+    image: ${ACR_LOGIN_SERVER}/${REPOSITORY_PREFIX}/{{BC_KEY}}-comandos-api:${IMAGE_TAG_COMANDOS_API}
+    # networks, secrets, deploy.replicas, healthcheck: completar.
+
+  consultas-api:
+    image: ${ACR_LOGIN_SERVER}/${REPOSITORY_PREFIX}/{{BC_KEY}}-consultas-api:${IMAGE_TAG_CONSULTAS_API}
+    # networks, secrets, deploy.replicas, healthcheck: completar.

@@ -1,0 +1,21 @@
+# Arquetipo: dotnet-service
+# Servicio .NET de negocio (típicamente CQRS: Comandos/Consultas), containerizado
+# y desplegado a Docker Swarm. Ver docs/archetypes/README.md para el esquema.
+description: "Servicio .NET de negocio (CQRS), containerizado, deploy a Swarm."
+stack: dotnet
+consumes: [reusables, dependabot]
+bc_key_required: true
+
+# Sin docker_directories al crear: el repo nace sin Dockerfiles (el equipo añade
+# los proyectos y sus Dockerfiles). El override se llena cuando el código aterriza
+# (vía scan-repo.sh o lo reporta el drift-check). El imagenes-docker.yml scaffoldeado
+# trae ejemplos comentados.
+overrides: {}
+
+# Strings EXACTOS de los checks (root `name:` de los reusables). Verificar tras el
+# primer PR — ver advertencia en docs/archetypes/README.md.
+required_checks:
+  - "Tests .NET (reusable)"
+  - "Build & Push Docker (reusable)"
+  - "Dependency Review (trivy)"
+  - "Secret Scan (trufflehog)"

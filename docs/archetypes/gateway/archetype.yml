@@ -1,0 +1,17 @@
+# Arquetipo: gateway
+# Gateway nginx empaquetado como imagen Docker. Sin código .NET propio; por eso
+# stack=github-actions (baseline) + override docker. Ver docs/archetypes/README.md.
+description: "Gateway nginx empaquetado como Docker, deploy a Swarm."
+stack: github-actions
+consumes: [reusables, dependabot]
+bc_key_required: true
+
+# El Dockerfile del gateway vive en la raíz del repo.
+overrides:
+  docker_directories:
+    - "/"
+
+required_checks:
+  - "Build & Push Docker (reusable)"
+  - "Dependency Review (trivy)"
+  - "Secret Scan (trufflehog)"

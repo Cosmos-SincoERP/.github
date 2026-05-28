@@ -1,0 +1,12 @@
+# Imágenes Docker del servicio. Cada entrada es {name, dockerfile, context}.
+# El nombre se publica como {acr}/{repository_prefix}/{name} en kebab-case.
+# Descubierto dinámicamente por los wrappers (yq -o=json '.imagenes').
+#
+# TODO({{REPO_NAME}}): reemplazar los ejemplos por las imágenes reales del servicio.
+imagenes:
+  - name: {{BC_KEY}}-comandos-api
+    dockerfile: {{REPO_NAME}}.Comandos.API/Dockerfile
+    context: .
+  - name: {{BC_KEY}}-consultas-api
+    dockerfile: {{REPO_NAME}}.Consultas.API/Dockerfile
+    context: .

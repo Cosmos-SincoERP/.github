@@ -17,27 +17,35 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 ├── .github/
 │   ├── workflows/
 │   │   ├── _reusable-*.yml          # 10 reusables migrados desde Cosmos.PlatformWorkflows
+│   │   ├── create-repo.yml          # Golden path: crea repos gobernados por arquetipo
 │   │   ├── sync-governance.yml      # Propaga cambios a repos consumidores
 │   │   ├── drift-check-governance.yml  # Reporta drift semanalmente
 │   │   └── README.md                # Doc de los reusables (catálogo + uso)
 │   └── scripts/
+│       ├── create-repo.sh           # Lógica del golden path de creación
 │       ├── sync-governance.sh       # Lógica del sync
 │       ├── drift-check-governance.sh
 │       ├── scan-repo.sh             # Helper de onboarding: propone bloque manifest
-│       └── lib-scan.sh              # Heurísticas compartidas (stack, docker, terraform)
+│       ├── lib-scan.sh              # Heurísticas de inspección (stack, docker, terraform)
+│       └── lib-render.sh            # Render compartido (dependabot, entrada de manifest)
 ├── docs/
 │   ├── adr/                          # Architecture Decision Records (MADR-lite)
 │   │   ├── README.md                 # Índice y guía para nuevos ADRs
 │   │   ├── template.md
 │   │   ├── 0001-marco-gobernanza-repositorios.md
 │   │   ├── 0002-politicas-repositorios-desarrollo.md
-│   │   └── 0003-politicas-repositorios-produccion.md
+│   │   ├── 0003-politicas-repositorios-produccion.md
+│   │   └── 0004-creacion-automatizada-repositorios.md
+│   ├── archetypes/                   # Plantillas de creación por arquetipo (golden path)
+│   │   ├── README.md                 # Esquema de archetype.yml + sustitución
+│   │   └── <arquetipo>/              # archetype.yml + files/ (scaffold con placeholders)
 │   ├── templates/                    # Plantillas de configuración por stack (sync source)
 │   │   ├── dependabot-dotnet.yml
 │   │   ├── dependabot-node-bun.yml
 │   │   ├── dependabot-docker.yml
 │   │   ├── dependabot-terraform.yml
-│   │   └── dependabot-github-actions.yml
+│   │   ├── dependabot-github-actions.yml
+│   │   └── security-checks.yml
 │   └── repos-manifest.yml            # Inventario de repos consumidores (sync target)
 └── README.md                         # Este archivo
 ```
@@ -58,9 +66,45 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 - [`.github/workflows/sync-governance.yml`](.github/workflows/sync-governance.yml) — propaga cambios. Triggers: push a `main` con cambios en templates/manifest/reusables, o `workflow_dispatch` (con `dry_run`).
 - [`.github/workflows/drift-check-governance.yml`](.github/workflows/drift-check-governance.yml) — cron semanal. Reporta drift en una issue actualizable de este repo.
 
-## Operación: onboarding de un repo al manifest
+## Golden path: crear un repo nuevo
 
-`scan-repo.sh` propone el bloque YAML listo para pegar en `docs/repos-manifest.yml` haciendo un clone shallow del repo e infiriendo stack + overrides.
+Para crear un repo ya gobernado, usar el workflow **`create-repo.yml`**
+(`workflow_dispatch`). Dado un **arquetipo** (`dotnet-service`, `dotnet-library-nuget`,
+`frontend`, `gateway`, `infra`, `placeholder`), el flujo:
+
+1. Crea el repo (privado por defecto) en la org.
+2. Aplica los settings que el ruleset org no cubre: squash-only, auto-merge y auto-delete
+   de la rama al mergear.
+3. Scaffoldea el CI/CD del arquetipo (wrappers que invocan los reusables) + `dependabot.yml`
+   + `security-checks.yml`, y hace el **commit inicial de `main`** (la App es bypass actor
+   del ruleset org; de ahí en adelante todo entra por PR).
+4. Registra la entrada en `docs/repos-manifest.yml` **vía PR en este repo** — al mergearlo,
+   el sync y el drift-check ya gobiernan el repo nuevo.
+5. Crea un repo-level ruleset con los **required status checks** del arquetipo.
+
+El input `dry_run` (por defecto `true`) valida y muestra el plan sin crear nada. Las
+plantillas y el esquema de arquetipos viven en [`docs/archetypes/`](docs/archetypes/).
+Decisión de diseño en [`docs/adr/0004-creacion-automatizada-repositorios.md`](docs/adr/0004-creacion-automatizada-repositorios.md).
+
+### Precondiciones (configuración fuera del repo)
+
+El flujo corre con un token de GitHub App. Respecto a los permisos que ya necesita el sync
+(Contents + Pull requests), el golden path requiere **adicionalmente** que la App tenga:
+
+- **Administration (organización)** — para crear repos.
+- **Administration (repositorio)** — para aplicar settings de merge y crear el repo-level ruleset.
+- **Workflows** — sin esto, el push inicial que toca `.github/workflows/*` es rechazado.
+- Estar en la **bypass list del ruleset org `~DEFAULT_BRANCH`** (ADR 0002 §B.1), para el
+  commit inicial de `main` del repo nuevo.
+
+> Por blast radius, se puede usar una App separada solo-creación en vez de ampliar la del
+> sync; en ese caso, ajustar los secrets referenciados en `create-repo.yml`. Ver ADR 0004.
+
+## Operación: onboarding (backfill) de un repo legacy al manifest
+
+Para repos que ya existen pero no nacieron por el golden path, `scan-repo.sh` propone el
+bloque YAML listo para pegar en `docs/repos-manifest.yml` haciendo un clone shallow del repo
+e infiriendo stack + overrides.
 
 ```bash
 $ bash .github/scripts/scan-repo.sh Cosmos.NuevoRepo

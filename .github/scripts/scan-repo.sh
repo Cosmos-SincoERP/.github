@@ -14,6 +14,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib-scan.sh
 source "$SCRIPT_DIR/lib-scan.sh"
+# shellcheck source=lib-render.sh
+source "$SCRIPT_DIR/lib-render.sh"
 
 ORG="${ORG:-Cosmos-SincoERP}"
 REPO="${1:-}"
@@ -41,12 +43,8 @@ fi
 
 stack="$(scan_detect_stack "$CLONE_DIR")"
 
-# docker_directories en array (compatible bash 3.2).
-docker_dirs_csv="$(scan_detect_docker_dirs "$CLONE_DIR" | tr '\n' '|' | sed 's/|$//')"
-declare -a docker_dirs=()
-if [ -n "$docker_dirs_csv" ]; then
-  IFS='|' read -ra docker_dirs <<< "$docker_dirs_csv"
-fi
+# docker_directories como CSV (formato que consume emit_manifest_entry).
+docker_dirs_csv="$(scan_detect_docker_dirs "$CLONE_DIR" | tr '\n' ',' | sed 's/,$//')"
 
 terraform_dir=""
 if [ "$stack" = "terraform" ]; then
@@ -57,21 +55,5 @@ if [ "$stack" = "terraform" ]; then
   fi
 fi
 
-cat <<EOF
-  - name: $REPO
-    stack: $stack  # inferido
-    consumes: [reusables, dependabot]
-EOF
-
-if [ -n "$terraform_dir" ] || [ ${#docker_dirs[@]} -gt 0 ]; then
-  echo "    overrides:"
-  if [ -n "$terraform_dir" ]; then
-    echo "      terraform_directory: $terraform_dir"
-  fi
-  if [ ${#docker_dirs[@]} -gt 0 ]; then
-    echo "      docker_directories:"
-    for d in "${docker_dirs[@]}"; do
-      echo "        - $d"
-    done
-  fi
-fi
+# emit_manifest_entry vive en lib-render.sh (compartida con create-repo.sh).
+emit_manifest_entry "$REPO" "$stack" "reusables,dependabot" "$terraform_dir" "$docker_dirs_csv" "# inferido"

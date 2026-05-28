@@ -1,0 +1,26 @@
+name: main · terraform apply
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tf-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: [self-hosted, azure, swarm-deploy]
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v6
+      - uses: hashicorp/setup-terraform@v3
+      - name: Azure login (Managed Identity)
+        run: az login --identity --output none
+      - run: terraform init -input=false
+      - run: terraform apply -input=false -auto-approve
