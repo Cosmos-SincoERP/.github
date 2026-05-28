@@ -264,7 +264,7 @@ register_in_manifest() {
   git push -q --force-with-lease origin "HEAD:$BRANCH" \
     || die "No se pudo pushear la rama del manifest a $SELF_REPO."
 
-  local existing_pr pr_body
+  local existing_pr pr_body pr_number=""
   existing_pr="$(gh pr list --repo "$SELF_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")"
   pr_body="$(cat <<EOF
 Onboarding automático de \`$OWNER_REPO\` al manifest, generado por el golden path
@@ -276,6 +276,7 @@ Onboarding automático de \`$OWNER_REPO\` al manifest, generado por el golden pa
 
 Al mergear, el sync y el drift-check toman este repo como gobernado. El repo ya
 nació con su scaffold y settings; esta PR solo lo registra como fuente de verdad.
+Tiene auto-merge habilitado: se mergea solo en cuanto los checks pasen.
 
 > Generado por create-repo.yml — ver ADR 0004.
 EOF
@@ -283,8 +284,8 @@ EOF
 
   if [ -n "$existing_pr" ]; then
     gh pr edit "$existing_pr" --repo "$SELF_REPO" --body "$pr_body" >/dev/null || true
+    pr_number="$existing_pr"
     log "PR de manifest ya existe (#$existing_pr) — actualizado."
-    add_summary "PR de manifest actualizado: #$existing_pr."
   else
     gh label create "governance-sync" --repo "$SELF_REPO" \
       --color "0e8a16" --description "PR generado por la gobernanza" >/dev/null 2>&1 || true
@@ -293,9 +294,22 @@ EOF
         --title "chore(governance): onboard $REPO_NAME ($ARCHETYPE)" \
         --body "$pr_body" --label "governance-sync" 2>&1)"; then
       log "PR de manifest abierto: $out"
-      add_summary "PR de manifest abierto: $out"
+      pr_number="$(gh pr list --repo "$SELF_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")"
     else
       fail "gh pr create falló:"; printf '%s\n' "$out" | sed 's/^/      /'
+      return 0
+    fi
+  fi
+
+  # Habilitar auto-merge: con 0 approvals (B.2) + checks verdes, el PR se mergea solo.
+  # No commit directo a .github: la App no es bypass de este repo (ADR 0004).
+  if [ -n "$pr_number" ]; then
+    if gh pr merge "$pr_number" --repo "$SELF_REPO" --auto --squash >/dev/null 2>&1; then
+      log "Auto-merge habilitado en el PR de manifest #$pr_number."
+      add_summary "PR de manifest #$pr_number (auto-merge habilitado)."
+    else
+      log "⚠ No se pudo habilitar auto-merge en #$pr_number — mergear manualmente."
+      add_summary "PR de manifest #$pr_number abierto (auto-merge no disponible; mergear manual)."
     fi
   fi
 }
