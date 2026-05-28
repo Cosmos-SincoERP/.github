@@ -12,10 +12,11 @@ bc_key_required: true
 # trae ejemplos comentados.
 overrides: {}
 
-# Strings EXACTOS de los checks (root `name:` de los reusables). Verificar tras el
-# primer PR — ver advertencia en docs/archetypes/README.md.
+# Contextos EXACTOS de los checks, en formato `<job-caller> / <job-del-reusable>`
+# (confirmado en PR #89). `tests / tests` viene del wrapper de tests; los de seguridad,
+# del security-checks.yml gestionado. El build de Docker queda fuera a propósito: expone
+# varios sub-jobs (uno condicional) y dependency-review ya escanea el Dockerfile.
 required_checks:
-  - "Tests .NET (reusable)"
-  - "Build & Push Docker (reusable)"
-  - "Dependency Review (trivy)"
-  - "Secret Scan (trufflehog)"
+  - "tests / tests"
+  - "dependency-review / trivy"
+  - "secret-scan / trufflehog"

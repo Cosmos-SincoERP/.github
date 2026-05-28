@@ -9,6 +9,7 @@ bc_key_required: false
 
 overrides: {}
 
+# Contextos en formato `<job-caller> / <job-del-reusable>` (confirmado en PR #89).
 required_checks:
-  - "Dependency Review (trivy)"
-  - "Secret Scan (trufflehog)"
+  - "dependency-review / trivy"
+  - "secret-scan / trufflehog"

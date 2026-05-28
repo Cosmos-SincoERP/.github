@@ -11,7 +11,8 @@ bc_key_required: true
 # Sin docker_directories. Un front servido por nginx usaría el arquetipo gateway.
 overrides: {}
 
+# Contextos en formato `<job-caller> / <job-del-reusable>` (confirmado en PR #89).
 required_checks:
-  - "Tests Frontend (reusable)"
-  - "Dependency Review (trivy)"
-  - "Secret Scan (trufflehog)"
+  - "tests / tests"
+  - "dependency-review / trivy"
+  - "secret-scan / trufflehog"
