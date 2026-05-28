@@ -63,10 +63,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-
       # Token efímero de la App dedicada de creación (cosmos-repo-creator),
       # separada de la del sync para acotar el blast radius (ver ADR 0004).
+      # Se genera ANTES del checkout para que el checkout (y por tanto `origin`)
+      # quede autenticado como la App: si no, actions/checkout inyecta un
+      # http.extraheader con el GITHUB_TOKEN que sobreescribe cualquier token en
+      # la URL de push y la rama del manifest se rechazaría con 403.
       - name: Generate App token
         id: token
         uses: actions/create-github-app-token@v3
@@ -74,6 +76,10 @@ jobs:
           client-id: ${{ secrets.REPO_CREATOR_APP_CLIENT_ID }}
           private-key: ${{ secrets.REPO_CREATOR_APP_PRIVATE_KEY }}
           owner: Cosmos-SincoERP
+
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ steps.token.outputs.token }}
 
       - name: Install yq
         run: |
