@@ -258,8 +258,10 @@ register_in_manifest() {
   git checkout -B "$BRANCH"
   git add "$MANIFEST"
   git commit -q -m "chore(governance): onboard $REPO_NAME ($ARCHETYPE) al manifest"
-  git push -q --force-with-lease \
-    "https://x-access-token:$GH_TOKEN@github.com/$SELF_REPO.git" "HEAD:$BRANCH" \
+  # Push a `origin` (este repo, .github): el checkout ya está autenticado como la App
+  # (token: en create-repo.yml), así que no hace falta URL con token embebido — que
+  # además sería sobreescrita por el http.extraheader que inyecta actions/checkout.
+  git push -q --force-with-lease origin "HEAD:$BRANCH" \
     || die "No se pudo pushear la rama del manifest a $SELF_REPO."
 
   local existing_pr pr_body
