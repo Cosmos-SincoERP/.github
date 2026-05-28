@@ -20,6 +20,13 @@
 # ─────────────────────────────────────────────────────────────────
 
 repos:
+
+  # creado por golden path (arquetipo infra)
+  - name: Cosmos.SbxInfra
+    stack: terraform
+    consumes: [reusables, dependabot]
+    overrides:
+      terraform_directory: /infra
   # ── BuildingBlocks / librerías .NET ─────────────────────────────
   - name: Cosmos.BuildingBlocks
     stack: dotnet
