@@ -66,6 +66,22 @@ fetch_remote_file() {
     | base64 -d 2>/dev/null || true
 }
 
+# Lista todos los paths de archivos (blobs) del default branch de un repo,
+# vía la API de árboles de Git (recursive). Paths relativos, sin leading slash.
+# Autoritativo: no depende de un clone, por lo que evita los falsos negativos
+# que producía un clone parcial/incompleto en CI (ver sección 5 del drift-check).
+#   $1 = owner/repo
+#   stdout = un path por línea (vacío si repo inaccesible/vacío)
+api_repo_file_paths() {
+  local owner_repo="$1" tree
+  tree="$(gh api "repos/$owner_repo/git/trees/HEAD?recursive=1" 2>/dev/null)" || return 0
+  [ -z "$tree" ] && return 0
+  if [ "$(printf '%s' "$tree" | jq -r '.truncated')" = "true" ]; then
+    echo "WARN: árbol de $owner_repo truncado por la API; detección puede ser incompleta" >&2
+  fi
+  printf '%s' "$tree" | jq -r '.tree[] | select(.type=="blob") | .path'
+}
+
 # Lista los workflow files (.yml/.yaml) de un repo destino.
 #   $1 = owner/repo
 list_remote_workflows() {

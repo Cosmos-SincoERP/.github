@@ -20,8 +20,6 @@ source "$SCRIPT_DIR/lib-scan.sh"
 # shellcheck source=lib-render.sh
 source "$SCRIPT_DIR/lib-render.sh"
 
-WORKDIR_CLONES=""
-
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 
 # render_dependabot, fetch_remote_file y list_remote_workflows viven en
@@ -107,21 +105,6 @@ check_orphans() {
   done <<< "$org_repos"
 }
 
-# Clona shallow un repo en WORKDIR_CLONES. Idempotente: si ya existe, no re-clona.
-# Usa `gh repo clone` para que el GH_TOKEN del workflow se aplique automáticamente.
-# Stdout: path al clone, vacío si falló.
-clone_shallow() {
-  local name="$1"
-  local clone_dir="$WORKDIR_CLONES/$name"
-  if [ -d "$clone_dir" ]; then
-    echo "$clone_dir"
-    return 0
-  fi
-  if gh repo clone "$ORG/$name" "$clone_dir" -- --quiet --depth 1 >/dev/null 2>&1; then
-    echo "$clone_dir"
-  fi
-}
-
 # Diff de docker_directories. Imprime líneas markdown con `+`/`-`.
 diff_docker_dirs() {
   local declared="$1" detected="$2"
@@ -150,15 +133,11 @@ check_overrides_drift() {
   local name="$1" declared_stack="$2" declared_tf="$3" declared_docker_csv="${4:-}"
   local owner_repo="$ORG/$name"
 
-  local clone_dir
-  clone_dir="$(clone_shallow "$name")"
-  if [ -z "$clone_dir" ]; then
-    log "  ⚠ clone falló para $owner_repo, skip overrides check"
-    return 0
-  fi
-
-  # Repo vacío: nada que comparar.
-  if [ -z "$(ls -A "$clone_dir" 2>/dev/null | grep -v '^\.git$' || true)" ]; then
+  # Lista de archivos del repo vía API de árboles (autoritativa, sin clone).
+  local paths
+  paths="$(api_repo_file_paths "$owner_repo")"
+  # Repo vacío / inaccesible: nada que comparar.
+  if [ -z "$paths" ]; then
     return 0
   fi
 
@@ -166,7 +145,7 @@ check_overrides_drift() {
 
   # 1. docker_directories
   local detected_docker_csv
-  detected_docker_csv="$(scan_detect_docker_dirs "$clone_dir" | tr '\n' ',' | sed 's/,$//')"
+  detected_docker_csv="$(printf '%s\n' "$paths" | paths_detect_docker_dirs | tr '\n' ',' | sed 's/,$//')"
   if [ "$detected_docker_csv" != "$declared_docker_csv" ]; then
     findings+=("  - **\`docker_directories\`** desactualizado:")
     local _diff_out
@@ -179,7 +158,7 @@ check_overrides_drift() {
   # 2. terraform_directory (solo aplica a stack=terraform)
   if [ "$declared_stack" = "terraform" ]; then
     local detected_tf norm_declared_tf
-    detected_tf="$(scan_detect_terraform_dir "$clone_dir")"
+    detected_tf="$(printf '%s\n' "$paths" | paths_detect_terraform_dir)"
     norm_declared_tf="$declared_tf"
     [ "$norm_declared_tf" = "/" ] && norm_declared_tf=""
     if [ "$detected_tf" = "UNKNOWN" ]; then
@@ -190,7 +169,7 @@ check_overrides_drift() {
   fi
 
   # 3. stack: marker del declarado no existe
-  if ! scan_stack_marker_exists "$clone_dir" "$declared_stack"; then
+  if ! printf '%s\n' "$paths" | paths_stack_marker_exists "$declared_stack"; then
     findings+=("  - **\`stack\`** sin marker: declarado \`$declared_stack\`, no se encontró archivo característico en el repo")
   fi
 
@@ -296,9 +275,6 @@ main() {
   if [ ! -f "$MANIFEST" ]; then
     log "ERROR: manifest no encontrado: $MANIFEST"; exit 1
   fi
-
-  WORKDIR_CLONES="$(mktemp -d -t drift-clones-XXXXXX)"
-  trap 'rm -rf "$WORKDIR_CLONES"' EXIT
 
   local repos_json
   repos_json="$(yq eval -o=json '.repos' "$MANIFEST")"
