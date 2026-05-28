@@ -35,6 +35,11 @@ repos:
     stack: dotnet
     consumes: [reusables, dependabot]
     # Sin Dockerfiles: librería pura.
+    
+  - name: Cosmos.Storage
+    stack: dotnet
+    consumes: [reusables, dependabot]
+    # Sin Dockerfiles: librería pura.
 
   # ── ApplicationPlane (orquestador del plane) ────────────────────
   - name: ApplicationPlane
