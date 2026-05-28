@@ -78,7 +78,8 @@ Para crear un repo ya gobernado, usar el workflow **`create-repo.yml`**
 3. Scaffoldea el CI/CD del arquetipo (wrappers que invocan los reusables) + `dependabot.yml`
    + `security-checks.yml`, y hace el **commit inicial de `main`** (la App es bypass actor
    del ruleset org; de ahí en adelante todo entra por PR).
-4. Registra la entrada en `docs/repos-manifest.yml` **vía PR en este repo** — al mergearlo,
+4. Registra la entrada en `docs/repos-manifest.yml` **vía PR en este repo** (con
+   **auto-merge** habilitado: se mergea solo en cuanto pasan los checks) — a partir de ahí
    el sync y el drift-check ya gobiernan el repo nuevo.
 5. Crea un repo-level ruleset con los **required status checks** del arquetipo.
 
