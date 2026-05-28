@@ -88,22 +88,26 @@ Decisión de diseño en [`docs/adr/0004-creacion-automatizada-repositorios.md`](
 
 ### Precondiciones (configuración fuera del repo)
 
-El flujo corre con un token de GitHub App. Respecto a los permisos que ya necesita el sync
-(Contents + Pull requests), el golden path requiere **adicionalmente** que la App tenga:
+El flujo corre con una **GitHub App dedicada de creación** (`cosmos-repo-creator`), separada
+de la del sync para acotar el blast radius (ADR 0004). Esa App debe configurarse con
+permisos granulares mínimos:
 
-- **Repository → Administration: Read & write** — crear repos (`POST /orgs/{org}/repos`),
-  aplicar settings de merge (`PATCH /repos/...`) y crear el repo-level ruleset
-  (`POST /repos/.../rulesets`). Las tres operaciones usan este mismo permiso.
-- **Repository → Workflows: Read & write** — sin esto, el push inicial que toca
-  `.github/workflows/*` es rechazado.
-- Estar en la **bypass list del ruleset org `~DEFAULT_BRANCH`** (ADR 0002 §B.1), para el
-  commit inicial de `main` del repo nuevo.
+| Permiso | Nivel | Para qué |
+|---|---|---|
+| Repository → Administration | Read & write | crear repos, settings de merge y el repo-level ruleset |
+| Repository → Contents | Read & write | commit inicial de `main` + rama del PR de manifest |
+| Repository → Workflows | Read & write | pushear archivos bajo `.github/workflows/*` |
+| Repository → Pull requests | Read & write | abrir el PR de manifest en este repo |
+| Repository → Metadata | Read-only | obligatorio (auto-seleccionado) |
 
-La instalación de la App en la org debe cubrir **todos los repos** (no un subconjunto), para
-que pueda administrar los repos recién creados.
+Además:
 
-> Por blast radius, se puede usar una App separada solo-creación en vez de ampliar la del
-> sync; en ese caso, ajustar los secrets referenciados en `create-repo.yml`. Ver ADR 0004.
+- **Instalar la App en la org con acceso a "All repositories"** (para administrar repos recién creados).
+- Añadir la App a la **bypass list del ruleset org `~DEFAULT_BRANCH`** (ADR 0002 §B.1), para el commit inicial de `main`.
+- Guardar `REPO_CREATOR_APP_CLIENT_ID` y `REPO_CREATOR_APP_PRIVATE_KEY` como secrets accesibles a este repo (`create-repo.yml` los consume).
+
+No requiere permisos de organización ni de Issues. Es un set estrictamente acotado a la
+creación, distinto al de la App del sync.
 
 ## Operación: onboarding (backfill) de un repo legacy al manifest
 

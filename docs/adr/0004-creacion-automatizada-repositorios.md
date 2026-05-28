@@ -118,9 +118,9 @@ estas características de diseño a nivel de decisión:
   introducir un sistema paralelo.
 - ⚠️ **Privilegio concentrado.** La identidad de automatización gana capacidad de crear
   repos y de sembrar el commit inicial saltando la regla de no-push. Es un blast radius
-  mayor si esa identidad se compromete; mitigación: acotar la excepción al bootstrap y a esa
-  identidad, y evaluar separar la identidad de creación de la de sync para limitar su
-  alcance.
+  mayor si esa identidad se compromete; mitigación: se adopta una **identidad dedicada de
+  creación**, separada de la del sync, con permisos granulares mínimos, y la excepción a la
+  regla de no-push se limita al bootstrap y a esa identidad.
 - ⚠️ **Ventana de inventario.** Entre crear el repo y aceptar su registro en el inventario
   hay un intervalo en el que el repo podría aparecer como no clasificado; se acota cerrando
   ese registro de inmediato.

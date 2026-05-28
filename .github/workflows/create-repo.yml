@@ -65,14 +65,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Token efímero de la App. Si se opta por una App separada de creación,
-      # cambiar estos secrets por los de esa App (ver ADR 0004).
+      # Token efímero de la App dedicada de creación (cosmos-repo-creator),
+      # separada de la del sync para acotar el blast radius (ver ADR 0004).
       - name: Generate App token
         id: token
         uses: actions/create-github-app-token@v3
         with:
-          client-id: ${{ secrets.GOVERNANCE_SYNC_APP_CLIENT_ID }}
-          private-key: ${{ secrets.GOVERNANCE_SYNC_APP_PRIVATE_KEY }}
+          client-id: ${{ secrets.REPO_CREATOR_APP_CLIENT_ID }}
+          private-key: ${{ secrets.REPO_CREATOR_APP_PRIVATE_KEY }}
           owner: Cosmos-SincoERP
 
       - name: Install yq
