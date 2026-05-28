@@ -20,6 +20,11 @@
 # ─────────────────────────────────────────────────────────────────
 
 repos:
+
+  # creado por golden path (arquetipo frontend)
+  - name: Cosmos.SbxFront
+    stack: node-bun
+    consumes: [reusables, dependabot]
   # ── BuildingBlocks / librerías .NET ─────────────────────────────
   - name: Cosmos.BuildingBlocks
     stack: dotnet
