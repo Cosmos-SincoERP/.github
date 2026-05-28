@@ -20,6 +20,14 @@
 # ─────────────────────────────────────────────────────────────────
 
 repos:
+
+  # creado por golden path (arquetipo gateway)
+  - name: Cosmos.SbxGateway
+    stack: github-actions
+    consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /
   # ── BuildingBlocks / librerías .NET ─────────────────────────────
   - name: Cosmos.BuildingBlocks
     stack: dotnet
