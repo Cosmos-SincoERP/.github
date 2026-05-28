@@ -20,6 +20,11 @@
 # ─────────────────────────────────────────────────────────────────
 
 repos:
+
+  # creado por golden path (arquetipo dotnet-service)
+  - name: Cosmos.SbxService
+    stack: dotnet
+    consumes: [reusables, dependabot]
   # ── BuildingBlocks / librerías .NET ─────────────────────────────
   - name: Cosmos.BuildingBlocks
     stack: dotnet
