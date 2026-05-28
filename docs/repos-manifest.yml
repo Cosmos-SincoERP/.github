@@ -20,11 +20,6 @@
 # ─────────────────────────────────────────────────────────────────
 
 repos:
-
-  # creado por golden path (arquetipo dotnet-library-nuget)
-  - name: Cosmos.Storage
-    stack: dotnet
-    consumes: [reusables, dependabot]
   # ── BuildingBlocks / librerías .NET ─────────────────────────────
   - name: Cosmos.BuildingBlocks
     stack: dotnet
@@ -37,6 +32,11 @@ repos:
     # Sin Dockerfiles: librerías puras.
 
   - name: Cosmos.Types
+    stack: dotnet
+    consumes: [reusables, dependabot]
+    # Sin Dockerfiles: librería pura.
+    
+  - name: Cosmos.Storage
     stack: dotnet
     consumes: [reusables, dependabot]
     # Sin Dockerfiles: librería pura.
