@@ -181,17 +181,18 @@ push_initial_main() {
     return 0
   fi
 
-  # Idempotencia: si main ya existe, asumir que ya fue bootstrappeado.
-  if git ls-remote --exit-code --heads \
-       "https://x-access-token:$GH_TOKEN@github.com/$OWNER_REPO.git" main >/dev/null 2>&1; then
-    log "main ya existe en $OWNER_REPO — saltando commit inicial (idempotente)."
-    return 0
-  fi
-
   local clone_dir="$WORK_DIR/clone"
   rm -rf "$clone_dir"
   git clone --quiet "https://x-access-token:$GH_TOKEN@github.com/$OWNER_REPO.git" "$clone_dir" \
     || die "No se pudo clonar el repo recién creado."
+
+  # Idempotencia: si el repo ya tiene commits (main bootstrapeado), no re-sembrar.
+  # Más robusto que `git ls-remote --heads ... main`, que con --exit-code no siempre
+  # detecta el ref vía el transporte autenticado.
+  if git -C "$clone_dir" rev-parse --verify HEAD >/dev/null 2>&1; then
+    log "main ya tiene contenido en $OWNER_REPO — saltando commit inicial (idempotente)."
+    return 0
+  fi
 
   ( cd "$clone_dir"
     git config user.email "governance-sync@cosmos-sincoerp.local"
