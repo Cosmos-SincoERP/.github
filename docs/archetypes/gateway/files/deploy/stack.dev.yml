@@ -1,0 +1,8 @@
+# Docker Swarm stack del gateway (dev). Placeholder.
+# TODO({{REPO_NAME}}): redes, puertos publicados y healthcheck reales.
+version: "3.8"
+
+services:
+  gateway:
+    image: ${ACR_LOGIN_SERVER}/${REPOSITORY_PREFIX}/{{BC_KEY}}-gateway:${IMAGE_TAG_GATEWAY}
+    # ports, networks, deploy.replicas: completar.

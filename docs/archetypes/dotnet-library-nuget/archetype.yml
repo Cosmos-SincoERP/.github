@@ -1,0 +1,15 @@
+# Arquetipo: dotnet-library-nuget
+# Librería .NET pura publicada como paquete NuGet. Sin Docker, sin deploy.
+# Ver docs/archetypes/README.md para el esquema.
+description: "Librería .NET publicada a NuGet (sin Docker, sin deploy)."
+stack: dotnet
+consumes: [reusables, dependabot]
+# NuGet publica a nuget.org con package_id; no requiere clave de bounded context.
+bc_key_required: false
+
+overrides: {}
+
+required_checks:
+  - "Tests .NET (reusable)"
+  - "Dependency Review (trivy)"
+  - "Secret Scan (trufflehog)"

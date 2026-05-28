@@ -1,0 +1,39 @@
+name: PR · build & push imágenes
+
+# Wrapper scaffoldeado por el golden path (arquetipo dotnet-service).
+# Invoca los reusables de Cosmos-SincoERP/.github. Ajustar TODOs antes del 1er PR.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-imagen-docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolver:
+    runs-on: ubuntu-latest
+    outputs:
+      images_json: ${{ steps.read.outputs.images_json }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: read
+        run: echo "images_json=$(yq -o=json '.imagenes' .github/imagenes-docker.yml | jq -c .)" >> "$GITHUB_OUTPUT"
+
+  tests:
+    uses: Cosmos-SincoERP/.github/.github/workflows/_reusable-tests-dotnet.yml@v1
+
+  docker:
+    needs: [resolver, tests]
+    uses: Cosmos-SincoERP/.github/.github/workflows/_reusable-docker-build-push.yml@v1
+    with:
+      images_json: ${{ needs.resolver.outputs.images_json }}
+      # TODO({{REPO_NAME}}): confirmar nombres del BC (convención estándar abajo).
+      acr_name: cr{{BC_KEY}}deveus2001
+      repository_prefix: {{BC_KEY}}
+      buildx_builder_name: {{BC_KEY}}-builder

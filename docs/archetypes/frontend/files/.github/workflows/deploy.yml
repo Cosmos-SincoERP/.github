@@ -1,0 +1,27 @@
+name: deploy
+
+# Deploy del SPA al Storage Account estático (patrón build-once/deploy-anywhere).
+# Auth por Managed Identity del runner self-hosted: sin OIDC, sin GH secrets de Azure.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    uses: Cosmos-SincoERP/.github/.github/workflows/_reusable-deploy-front.yml@v1
+    with:
+      # TODO({{REPO_NAME}}): confirmar storage_account_name y web_endpoint (outputs
+      # del módulo cosmos_front_app en el repo de Infraestructura del BC).
+      app_name: {{BC_KEY}}
+      environment: dev
+      storage_account_name: stfe{{BC_KEY}}deveus2001
+      web_endpoint: https://stfe{{BC_KEY}}deveus2001.z20.web.core.windows.net/{{BC_KEY}}/
+      key_vault_name: kv-{{BC_KEY}}-dev-eus2-001

@@ -11,6 +11,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib-render.sh
+source "$SCRIPT_DIR/lib-render.sh"
+
 # ─── Config ──────────────────────────────────────────────────────────────────
 ORG="Cosmos-SincoERP"
 SELF_REPO="$ORG/.github"
@@ -40,61 +44,8 @@ log()    { echo "[$(date +%H:%M:%S)] $*"; }
 fail()   { log "ERROR: $*" >&2; }
 section(){ echo; echo "═══ $* ═══"; }
 
-# Renderiza un template de dependabot con sustitución de tokens y, opcionalmente,
-# appendea un bloque docker con N directorios.
-# Args: stack, terraform_directory, docker_dirs_csv
-render_dependabot() {
-  local stack="$1"
-  local terraform_directory="${2:-/}"
-  local docker_dirs_csv="${3:-}"
-  local template="$TEMPLATES_DIR/dependabot-$stack.yml"
-
-  if [ ! -f "$template" ]; then
-    fail "Template no encontrado: $template (stack=$stack)"
-    return 1
-  fi
-
-  # Render base. Delimitador `#` (no `|`) porque el patrón contiene un `|` literal.
-  sed "s#{{ terraform_directory | default('/') }}#$terraform_directory#g" "$template"
-
-  # Appendear bloque docker si hay docker_directories en overrides del manifest.
-  # Una sola entrada con `directories:` plural (Dependabot lo soporta desde 2024;
-  # más limpio que N entradas separadas).
-  if [ -n "$docker_dirs_csv" ]; then
-    printf '\n'
-    printf '  - package-ecosystem: "docker"\n'
-    printf '    directories:\n'
-    IFS=',' read -ra DOCKER_DIRS <<< "$docker_dirs_csv"
-    for d in "${DOCKER_DIRS[@]}"; do
-      printf '      - "%s"\n' "$d"
-    done
-    printf '    schedule:\n'
-    printf '      interval: "weekly"\n'
-    printf '      day: "wednesday"\n'
-    printf '    open-pull-requests-limit: 5\n'
-    printf '    groups:\n'
-    printf '      all:\n'
-    printf '        applies-to: version-updates\n'
-    printf '        patterns: ["*"]\n'
-  fi
-}
-
-# Obtiene el contenido actual de un archivo en un repo destino.
-# Args: owner/repo, path
-# Output: contenido del archivo (vacío si no existe)
-fetch_remote_file() {
-  local owner_repo="$1" path="$2"
-  gh api "repos/$owner_repo/contents/$path" --jq '.content' 2>/dev/null \
-    | base64 -d 2>/dev/null || true
-}
-
-# Lista los workflow files (.yml/.yaml) del repo destino.
-list_remote_workflows() {
-  local owner_repo="$1"
-  gh api "repos/$owner_repo/contents/.github/workflows" \
-    --jq '.[] | select(.type=="file") | select(.name | test("\\.(yml|yaml)$")) | .name' \
-    2>/dev/null || true
-}
+# render_dependabot, fetch_remote_file y list_remote_workflows viven en
+# lib-render.sh (source-eada arriba), compartidas con drift-check y create-repo.
 
 # ─── Lógica principal por repo ───────────────────────────────────────────────
 

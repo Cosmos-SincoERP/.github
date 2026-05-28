@@ -1,0 +1,16 @@
+name: PR cierre · cleanup ACR
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    uses: Cosmos-SincoERP/.github/.github/workflows/_reusable-cleanup-acr-pr.yml@v1
+    with:
+      acr_name: cr{{BC_KEY}}deveus2001
+      repository_prefix: {{BC_KEY}}
+      pr_number: ${{ github.event.pull_request.number }}

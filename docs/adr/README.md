@@ -9,6 +9,7 @@ Estos ADRs documentan decisiones de **gobernanza operacional** de los repositori
 | [0001](0001-marco-gobernanza-repositorios.md) | Marco de gobernanza y políticas de repositorios | `accepted` |
 | [0002](0002-politicas-repositorios-desarrollo.md) | Políticas de repositorios — ambiente de desarrollo | `accepted` |
 | [0003](0003-politicas-repositorios-produccion.md) | Políticas de repositorios — ambiente de producción | `proposed` |
+| [0004](0004-creacion-automatizada-repositorios.md) | Golden path de creación de repositorios | `proposed` |
 
 ## Formato
 

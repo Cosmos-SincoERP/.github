@@ -1,0 +1,14 @@
+# Arquetipo: placeholder
+# Repo sin código de aplicación aún, o solo docs/diagramas. Recibe únicamente el
+# baseline: security-checks (vía reusables) + dependabot github-actions.
+# Ver docs/archetypes/README.md.
+description: "Repo baseline: solo docs/placeholder, sin código de aplicación aún."
+stack: github-actions
+consumes: [reusables, dependabot]
+bc_key_required: false
+
+overrides: {}
+
+required_checks:
+  - "Dependency Review (trivy)"
+  - "Secret Scan (trufflehog)"

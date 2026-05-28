@@ -1,0 +1,16 @@
+name: PR · tests frontend
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    uses: Cosmos-SincoERP/.github/.github/workflows/_reusable-tests-frontend.yml@v1

@@ -1,0 +1,17 @@
+# Arquetipo: frontend
+# SPA (Bun + Vite) desplegado a un Storage Account estático con el patrón
+# build-once/deploy-anywhere (_reusable-deploy-front). Ver docs/archetypes/README.md.
+description: "SPA Bun + Vite, deploy a Storage Account estático (deploy-front)."
+stack: node-bun
+consumes: [reusables, dependabot]
+# bc_key se usa como app_name y para derivar storage/KV del proyecto.
+bc_key_required: true
+
+# El patrón deploy-front NO containeriza el front (deploy a $web del Storage).
+# Sin docker_directories. Un front servido por nginx usaría el arquetipo gateway.
+overrides: {}
+
+required_checks:
+  - "Tests Frontend (reusable)"
+  - "Dependency Review (trivy)"
+  - "Secret Scan (trufflehog)"

@@ -1,0 +1,18 @@
+# Arquetipo: infra
+# Infraestructura como código (Terraform) de un bounded context. Los .tf viven en
+# /infra. No hay reusable de Terraform: el plan/apply es self-contained en el repo.
+# Ver docs/archetypes/README.md.
+description: "Infraestructura Terraform de un bounded context (.tf en /infra)."
+stack: terraform
+consumes: [reusables, dependabot]
+bc_key_required: true
+
+overrides:
+  terraform_directory: /infra
+
+# Solo los checks de seguridad son reusables estables. El check de `terraform plan`
+# lo expone el wrapper scaffoldeado (pr-plan.yml); añadirlo aquí tras verificar su
+# nombre exacto en el primer PR.
+required_checks:
+  - "Dependency Review (trivy)"
+  - "Secret Scan (trufflehog)"
