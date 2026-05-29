@@ -9,8 +9,12 @@ bc_key_required: false
 
 overrides: {}
 
-# Contextos en formato `<job-caller> / <job-del-reusable>` (confirmado en PR #89).
+# Contextos en formato `<job-caller> / <job-del-reusable>`. El wrapper `pr-tests.yml`
+# de este arquetipo define el job `tests` que llama a `_reusable-tests-dotnet.yml`,
+# cuyo job se llama "dotnet build & test" → GitHub publica "tests / dotnet build & test".
+# (Verificado contra el primer PR real de Cosmos.Storage; antes decía "tests / tests"
+# y dejaba el ruleset esperando un contexto que nunca reportaba.)
 required_checks:
-  - "tests / tests"
+  - "tests / dotnet build & test"
   - "dependency-review / trivy"
   - "secret-scan / trufflehog"
