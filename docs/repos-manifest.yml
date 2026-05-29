@@ -75,6 +75,14 @@ repos:
         - /Cosmos.Asistente.Comandos.API
         - /Cosmos.Asistente.Consultas.API
 
+  - name: Cosmos.Asistente.Gateway
+    stack: github-actions
+    consumes: [reusables, dependabot]
+    # Gateway empaquetado como Docker (nginx); sin código .NET propio.
+    overrides:
+      docker_directories:
+        - /
+
   - name: Cosmos.Asistente.Front
     stack: node-bun
     consumes: [reusables, dependabot]
