@@ -122,13 +122,9 @@ render_scaffold() {
     done < <(find "$files_root" -type f)
   fi
 
-  # dependabot.yml (gestionado; mismo render que el sync).
-  if [[ ",$CONSUMES_CSV," == *,dependabot,* ]]; then
-    mkdir -p "$SCAFFOLD_DIR/.github"
-    render_dependabot "$STACK" "${TF_DIR:-/}" "$DOCKER_CSV" > "$SCAFFOLD_DIR/.github/dependabot.yml" \
-      || die "No se pudo renderizar dependabot (stack=$STACK)."
-    log "  + .github/dependabot.yml"
-  fi
+  # dependabot.yml: NO se renderiza al crear. Lo gestiona el sync/drift de gobernanza
+  # (sync-governance.sh, keyed en `consumes`/`stack` del manifest) — se coloca en la
+  # primera corrida del sync que dispara el merge del PR de manifest. Ver ADR 0005.
 
   # security-checks.yml (gestionado; idéntico al template del sync).
   if [[ ",$CONSUMES_CSV," == *,reusables,* ]]; then

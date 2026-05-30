@@ -75,9 +75,11 @@ Para crear un repo ya gobernado, usar el workflow **`create-repo.yml`**
 1. Crea el repo (privado por defecto) en la org.
 2. Aplica los settings que el ruleset org no cubre: squash-only, auto-merge y auto-delete
    de la rama al mergear.
-3. Scaffoldea el CI/CD del arquetipo (wrappers que invocan los reusables) + `dependabot.yml`
-   + `security-checks.yml`, y hace el **commit inicial de `main`** (la App es bypass actor
-   del ruleset org; de ahí en adelante todo entra por PR).
+3. Scaffoldea el baseline del arquetipo — `security-checks.yml` (+ skeleton de app donde
+   aplique, p. ej. `Dockerfile`/`nginx.conf` del gateway) — y hace el **commit inicial de
+   `main`** (la App es bypass actor del ruleset org; de ahí en adelante todo entra por PR).
+   El `dependabot.yml` lo coloca el sync; el CI/CD de Swarm de `dotnet-service`/`gateway`
+   lo agregan las skills de onboarding post-infra (ver ADR 0005).
 4. Registra la entrada en `docs/repos-manifest.yml` **vía PR en este repo** (con
    **auto-merge** habilitado: se mergea solo en cuanto pasan los checks) — a partir de ahí
    el sync y el drift-check ya gobiernan el repo nuevo.
