@@ -1,22 +1,21 @@
 #!/usr/bin/env bash
 # create-repo.sh — golden path de creación de repos gobernados.
-# Invocado por .github/workflows/create-repo.yml. Ver ADR 0004.
+# Invocado por .github/workflows/create-repo.yml. Ver ADR 0004 y ADR 0005.
 #
 # Crea un repo nuevo en la org, le aplica los settings que el ruleset org no cubre,
-# le scaffoldea los workflows/config del arquetipo, hace el commit inicial de `main`
-# (la App es bypass actor del ruleset org) y registra la entrada en el manifest de
+# le scaffoldea el baseline de seguridad (security-checks.yml), hace el commit inicial de
+# `main` (la App es bypass actor del ruleset org) y registra la entrada en el manifest de
 # `.github` vía PR. Idempotente: re-correr tras un fallo parcial continúa.
 #
+# El golden path NO crea CI/CD de negocio ni de devops (build/deploy/nuget/terraform): el
+# repo nace solo con el baseline de seguridad. El resto del CI/CD lo añaden las skills de
+# onboarding o el equipo cuando el código aterriza. Ver ADR 0005.
+#
 # Variables de entorno:
-#   GH_TOKEN            — token de la App (Administration org+repo, Contents, Workflows, PRs)
-#   REPO_NAME           — nombre del repo nuevo (sin owner)
-#   ARCHETYPE           — uno de docs/archetypes/*
-#   VISIBILITY          — private | public (default private)
-#   BC_KEY              — clave del bounded context (ej. oxp); requerido por algunos arquetipos
-#   DESCRIPTION         — descripción del repo (opcional)
-#   DRY_RUN             — "true" (default): valida y muestra el plan sin crear nada
-#   SET_REQUIRED_CHECKS — "true" (default): crea el repo-level ruleset de checks
-#   RUN_SHA             — SHA del commit de .github que disparó el flujo (para nombres)
+#   GH_TOKEN   — token de la App (Administration org+repo, Contents, Workflows, PRs)
+#   REPO_NAME  — nombre del repo nuevo (sin owner)
+#   DRY_RUN    — "true" (default): valida y muestra el plan sin crear nada
+#   RUN_SHA    — SHA del commit de .github que disparó el flujo (para nombres)
 
 set -euo pipefail
 
@@ -29,17 +28,21 @@ ORG="Cosmos-SincoERP"
 SELF_REPO="$ORG/.github"
 MANIFEST="docs/repos-manifest.yml"
 TEMPLATES_DIR="docs/templates"
-ARCHETYPES_DIR="docs/archetypes"
-RULESET_NAME="cosmos-archetype-checks"
+RULESET_NAME="cosmos-baseline-checks"
 WORK_DIR="/tmp/create-repo-work"
 
+# Baseline único para todo repo nuevo (no hay arquetipos: ver ADR 0005).
+#   STACK=github-actions — el repo nace con el dependabot de github-actions; cuando el
+#   equipo aterriza su código y actualiza el manifest, el sync re-renderiza el dependabot
+#   del stack real. REQUIRED_CHECKS — los checks de seguridad del security-checks.yml
+#   gestionado (formato `<job-caller> / <job-del-reusable>`); son los únicos required que
+#   aplica el golden path.
+STACK="github-actions"
+REQUIRED_CHECKS=("dependency-review / trivy" "secret-scan / trufflehog")
+
 REPO_NAME="${REPO_NAME:-}"
-ARCHETYPE="${ARCHETYPE:-}"
-VISIBILITY="${VISIBILITY:-private}"
-BC_KEY="${BC_KEY:-}"
-DESCRIPTION="${DESCRIPTION:-}"
+VISIBILITY="private"
 DRY_RUN="${DRY_RUN:-true}"
-SET_REQUIRED_CHECKS="${SET_REQUIRED_CHECKS:-true}"
 RUN_SHA="${RUN_SHA:-manual}"
 
 OWNER_REPO="$ORG/$REPO_NAME"
@@ -51,18 +54,6 @@ fail()   { log "ERROR: $*" >&2; }
 section(){ echo; echo "═══ $* ═══"; }
 die()    { fail "$*"; exit 1; }
 
-# Escapa una cadena para usarla como reemplazo de sed con delimitador `#`.
-sed_escape() { printf '%s' "$1" | sed -e 's/[\\#&]/\\&/g'; }
-
-# Sustituye tokens {{...}} en un scalar usando expansión de bash (sin sed).
-apply_tokens() {
-  local s="$1"
-  s="${s//\{\{REPO_NAME\}\}/$REPO_NAME}"
-  s="${s//\{\{BC_KEY\}\}/$BC_KEY}"
-  s="${s//\{\{DESCRIPTION\}\}/$DESCRIPTION}"
-  printf '%s' "$s"
-}
-
 declare -a SUMMARY=()
 add_summary() { SUMMARY+=("$*"); }
 
@@ -72,66 +63,26 @@ validate() {
 
   [ -n "$REPO_NAME" ] || die "REPO_NAME vacío."
   [[ "$REPO_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "REPO_NAME inválido: '$REPO_NAME' (solo [A-Za-z0-9._-])."
-  [ "$VISIBILITY" = "private" ] || [ "$VISIBILITY" = "public" ] || die "VISIBILITY inválido: '$VISIBILITY' (private|public)."
 
-  ARCH_DIR="$ARCHETYPES_DIR/$ARCHETYPE"
-  ARCH_YML="$ARCH_DIR/archetype.yml"
-  [ -f "$ARCH_YML" ] || die "Arquetipo desconocido: '$ARCHETYPE' (no existe $ARCH_YML)."
-
-  STACK="$(yq -r '.stack' "$ARCH_YML")"
-  CONSUMES_CSV="$(yq -r '.consumes | join(",")' "$ARCH_YML")"
-  BC_KEY_REQUIRED="$(yq -r '.bc_key_required // false' "$ARCH_YML")"
-  TF_DIR="$(apply_tokens "$(yq -r '.overrides.terraform_directory // ""' "$ARCH_YML")")"
-  DOCKER_CSV="$(apply_tokens "$(yq -o=json '.overrides.docker_directories // []' "$ARCH_YML" | jq -r 'join(",")')")"
-
-  if [ "$BC_KEY_REQUIRED" = "true" ] && [ -z "$BC_KEY" ]; then
-    die "El arquetipo '$ARCHETYPE' requiere bc_key (clave del bounded context, ej. oxp)."
-  fi
-  if [ -n "$BC_KEY" ] && ! [[ "$BC_KEY" =~ ^[a-z0-9]+$ ]]; then
-    die "BC_KEY inválido: '$BC_KEY' (solo minúsculas/dígitos, ej. oxp)."
-  fi
-
-  log "REPO_NAME=$REPO_NAME  ARCHETYPE=$ARCHETYPE  STACK=$STACK  VISIBILITY=$VISIBILITY"
-  log "BC_KEY='${BC_KEY:-<n/a>}'  consumes=[$CONSUMES_CSV]  tf_dir='${TF_DIR:-/}'  docker=[${DOCKER_CSV:-}]"
+  log "REPO_NAME=$REPO_NAME  STACK=$STACK (baseline)  VISIBILITY=$VISIBILITY"
 }
 
 # ─── Render del scaffold a un workdir local ──────────────────────────────────
 render_scaffold() {
-  section "Render del scaffold ($ARCHETYPE)"
+  section "Render del scaffold (baseline de seguridad)"
 
   SCAFFOLD_DIR="$WORK_DIR/scaffold"
   rm -rf "$SCAFFOLD_DIR"; mkdir -p "$SCAFFOLD_DIR"
-
-  local rn_esc bk_esc desc_esc
-  rn_esc="$(sed_escape "$REPO_NAME")"
-  bk_esc="$(sed_escape "$BC_KEY")"
-  desc_esc="$(sed_escape "$DESCRIPTION")"
-
-  local files_root="$ARCH_DIR/files"
-  if [ -d "$files_root" ]; then
-    local src rel dest
-    while IFS= read -r src; do
-      rel="${src#"$files_root"/}"
-      dest="$SCAFFOLD_DIR/$rel"
-      mkdir -p "$(dirname "$dest")"
-      sed -e "s#{{REPO_NAME}}#$rn_esc#g" \
-          -e "s#{{BC_KEY}}#$bk_esc#g" \
-          -e "s#{{DESCRIPTION}}#$desc_esc#g" \
-          "$src" > "$dest"
-      log "  + $rel"
-    done < <(find "$files_root" -type f)
-  fi
 
   # dependabot.yml: NO se renderiza al crear. Lo gestiona el sync/drift de gobernanza
   # (sync-governance.sh, keyed en `consumes`/`stack` del manifest) — se coloca en la
   # primera corrida del sync que dispara el merge del PR de manifest. Ver ADR 0005.
 
-  # security-checks.yml (gestionado; idéntico al template del sync).
-  if [[ ",$CONSUMES_CSV," == *,reusables,* ]]; then
-    mkdir -p "$SCAFFOLD_DIR/.github/workflows"
-    cp "$TEMPLATES_DIR/security-checks.yml" "$SCAFFOLD_DIR/.github/workflows/security-checks.yml"
-    log "  + .github/workflows/security-checks.yml"
-  fi
+  # security-checks.yml (gestionado; idéntico al template del sync). Es el único artefacto
+  # que scaffoldea el golden path: baseline + seguridad, nada de CI/CD. Ver ADR 0005.
+  mkdir -p "$SCAFFOLD_DIR/.github/workflows"
+  cp "$TEMPLATES_DIR/security-checks.yml" "$SCAFFOLD_DIR/.github/workflows/security-checks.yml"
+  log "  + .github/workflows/security-checks.yml"
 }
 
 # ─── Crear repo + settings ───────────────────────────────────────────────────
@@ -145,7 +96,6 @@ create_and_configure_repo() {
       log "DRY-RUN: crearía $OWNER_REPO ($VISIBILITY)."
     else
       gh repo create "$OWNER_REPO" "--$VISIBILITY" \
-        ${DESCRIPTION:+--description "$DESCRIPTION"} \
         || die "gh repo create falló (¿la App tiene Administration:write en la org?)."
       log "Repo creado: $OWNER_REPO"
       add_summary "Repo \`$OWNER_REPO\` creado ($VISIBILITY)."
@@ -196,13 +146,13 @@ push_initial_main() {
     git checkout -b main
     cp -r "$SCAFFOLD_DIR/." .
     git add -A
-    git commit -q -m "chore: scaffold inicial ($ARCHETYPE) vía golden path"
+    git commit -q -m "chore: scaffold inicial (baseline de seguridad) vía golden path"
     # La App debe estar en la bypass list del ruleset org (~DEFAULT_BRANCH).
     git push -q origin main \
       || die "push a main rechazado. ¿La App está en la bypass list del ruleset org B.1?"
   )
   log "Scaffold pusheado a main de $OWNER_REPO."
-  add_summary "main inicializado con el scaffold del arquetipo \`$ARCHETYPE\`."
+  add_summary "main inicializado con el baseline de seguridad."
 }
 
 # ─── Registrar en el manifest vía PR en .github ──────────────────────────────
@@ -220,8 +170,8 @@ register_in_manifest() {
   fi
 
   local entry
-  entry="$(emit_manifest_entry "$REPO_NAME" "$STACK" "$CONSUMES_CSV" "$TF_DIR" "$DOCKER_CSV")"
-  entry="  # creado por golden path (arquetipo $ARCHETYPE)"$'\n'"$entry"
+  entry="$(emit_manifest_entry "$REPO_NAME" "$STACK")"
+  entry="  # creado por golden path (baseline)"$'\n'"$entry"
 
   if [ "$DRY_RUN" = "true" ]; then
     log "DRY-RUN: añadiría al manifest la entrada:"
@@ -253,7 +203,7 @@ register_in_manifest() {
   git config user.name "cosmos-governance-sync[bot]"
   git checkout -B "$BRANCH"
   git add "$MANIFEST"
-  git commit -q -m "chore(governance): onboard $REPO_NAME ($ARCHETYPE) al manifest"
+  git commit -q -m "chore(governance): onboard $REPO_NAME al manifest"
   # Push a `origin` (este repo, .github): el checkout ya está autenticado como la App
   # (token: en create-repo.yml), así que no hace falta URL con token embebido — que
   # además sería sobreescrita por el http.extraheader que inyecta actions/checkout.
@@ -266,15 +216,16 @@ register_in_manifest() {
 Onboarding automático de \`$OWNER_REPO\` al manifest, generado por el golden path
 (\`create-repo.yml\`) desde \`$SELF_REPO@${RUN_SHA:0:7}\`.
 
-- **Arquetipo**: \`$ARCHETYPE\`
-- **Stack**: \`$STACK\`
-- **Consume**: \`$CONSUMES_CSV\`
+- **Stack**: \`$STACK\` (baseline; el sync ajusta el dependabot al stack real cuando el
+  equipo actualiza el manifest)
+- **Consume**: \`reusables, dependabot\`
 
-Al mergear, el sync y el drift-check toman este repo como gobernado. El repo ya
-nació con su scaffold y settings; esta PR solo lo registra como fuente de verdad.
-Tiene auto-merge habilitado: se mergea solo en cuanto los checks pasen.
+El repo nació con el baseline de seguridad y sus settings; el CI/CD de negocio/devops se
+añade aparte (skills de onboarding o a mano). Al mergear, el sync y el drift-check toman
+este repo como gobernado. Tiene auto-merge habilitado: se mergea solo en cuanto los
+checks pasen.
 
-> Generado por create-repo.yml — ver ADR 0004.
+> Generado por create-repo.yml — ver ADR 0005.
 EOF
 )"
 
@@ -287,7 +238,7 @@ EOF
       --color "0e8a16" --description "PR generado por la gobernanza" >/dev/null 2>&1 || true
     local out
     if out="$(gh pr create --repo "$SELF_REPO" --base main --head "$BRANCH" \
-        --title "chore(governance): onboard $REPO_NAME ($ARCHETYPE)" \
+        --title "chore(governance): onboard $REPO_NAME" \
         --body "$pr_body" --label "governance-sync" 2>&1)"; then
       log "PR de manifest abierto: $out"
       pr_number="$(gh pr list --repo "$SELF_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")"
@@ -312,15 +263,11 @@ EOF
 
 # ─── Required status checks (repo-level ruleset) ─────────────────────────────
 apply_required_checks() {
-  [ "$SET_REQUIRED_CHECKS" = "true" ] || { log "SET_REQUIRED_CHECKS=false — omitido."; return 0; }
   section "Required status checks (ruleset $RULESET_NAME)"
 
+  # Checks baseline de seguridad (constantes; ya no se derivan de un arquetipo). Ver ADR 0005.
   local checks_json payload
-  checks_json="$(yq -o=json '.required_checks // []' "$ARCH_YML" | jq -c '[.[] | {context: .}]')"
-  if [ "$checks_json" = "[]" ]; then
-    log "Sin required_checks declarados — omitido."
-    return 0
-  fi
+  checks_json="$(jq -nc --args '[$ARGS.positional[] | {context: .}]' "${REQUIRED_CHECKS[@]}")"
 
   payload="$(jq -n --arg name "$RULESET_NAME" --argjson checks "$checks_json" '{
     name: $name,
@@ -359,7 +306,7 @@ apply_required_checks() {
     fi
   fi
 
-  log "⚠ Verificar tras el primer PR que los nombres de check calzan; si no, ajustar archetype.yml/ruleset."
+  log "⚠ Verificar tras el primer PR que los nombres de check calzan; si no, ajustar el security-checks.yml/ruleset."
 }
 
 # ─── Resumen ─────────────────────────────────────────────────────────────────
@@ -368,9 +315,8 @@ emit_step_summary() {
   {
     echo "# Golden path — creación de \`$REPO_NAME\`"
     echo
-    echo "- Arquetipo: **$ARCHETYPE** (stack \`$STACK\`)"
+    echo "- Baseline de seguridad (stack \`$STACK\`)"
     echo "- Visibilidad: **$VISIBILITY**"
-    [ -n "$BC_KEY" ] && echo "- Bounded context: \`$BC_KEY\`"
     echo
     if [ "$DRY_RUN" = "true" ]; then
       echo "> ⚠️ DRY-RUN — no se creó ni modificó nada. Repetir con \`dry_run: false\` para ejecutar."
@@ -389,7 +335,7 @@ main() {
   [ -f "$MANIFEST" ] || die "Manifest no encontrado: $MANIFEST (¿se corre desde el root de .github?)."
   rm -rf "$WORK_DIR"; mkdir -p "$WORK_DIR"
 
-  log "DRY_RUN=$DRY_RUN  SET_REQUIRED_CHECKS=$SET_REQUIRED_CHECKS"
+  log "DRY_RUN=$DRY_RUN"
 
   validate
   render_scaffold

@@ -1,9 +1,10 @@
 name: Crear repo (golden path)
 
-# Golden path de creación de repos gobernados. Dado un arquetipo, crea el repo,
-# aplica settings, scaffoldea los workflows del arquetipo, hace el commit inicial
+# Golden path de creación de repos gobernados. Crea el repo, aplica settings,
+# scaffoldea el baseline de seguridad (security-checks.yml), hace el commit inicial
 # de main (la App es bypass actor del ruleset org) y registra la entrada en el
-# manifest vía PR. Ver ADR 0004 y docs/archetypes/README.md.
+# manifest vía PR. El CI/CD de negocio/devops NO lo crea el golden path: se añade
+# aparte (skills de onboarding o a mano). Ver ADR 0004 y ADR 0005.
 #
 # Precondiciones (configuración fuera del repo, ver ADR 0004 §precondiciones):
 #   - La App tiene Administration (org + repo), Contents, Workflows y Pull requests.
@@ -16,38 +17,8 @@ on:
         description: 'Nombre del repo nuevo (sin owner). Ej: Cosmos.NuevoServicio'
         type: string
         required: true
-      archetype:
-        description: 'Arquetipo del repo'
-        type: choice
-        required: true
-        options:
-          - dotnet-service
-          - dotnet-library-nuget
-          - frontend
-          - gateway
-          - infra
-          - placeholder
-      visibility:
-        description: 'Visibilidad del repo'
-        type: choice
-        default: private
-        options:
-          - private
-          - public
-      bc_key:
-        description: 'Clave del bounded context (ej. oxp). Requerido por service/frontend/gateway/infra.'
-        type: string
-        default: ''
-      description:
-        description: 'Descripción del repo (opcional)'
-        type: string
-        default: ''
       dry_run:
         description: 'Solo validar y mostrar el plan, sin crear nada'
-        type: boolean
-        default: true
-      set_required_checks:
-        description: 'Crear el repo-level ruleset de required status checks'
         type: boolean
         default: true
 
@@ -91,11 +62,6 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           REPO_NAME: ${{ inputs.repo_name }}
-          ARCHETYPE: ${{ inputs.archetype }}
-          VISIBILITY: ${{ inputs.visibility }}
-          BC_KEY: ${{ inputs.bc_key }}
-          DESCRIPTION: ${{ inputs.description }}
           DRY_RUN: ${{ inputs.dry_run }}
-          SET_REQUIRED_CHECKS: ${{ inputs.set_required_checks }}
           RUN_SHA: ${{ github.sha }}
         run: bash .github/scripts/create-repo.sh

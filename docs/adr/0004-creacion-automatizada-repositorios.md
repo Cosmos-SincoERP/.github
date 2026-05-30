@@ -23,8 +23,8 @@ la gobernanza automatizada). La experiencia para quien crea un repo es pobre: ne
 conocer todos los pasos y replicarlos sin omisiones.
 
 Pregunta de decisión: ¿qué mecanismo adopta la organización para que crear un repo
-produzca, desde el minuto cero, un repo conforme al baseline, con el CI/CD pertinente a su
-tipo y ya inventariado para la gobernanza?
+produzca, desde el minuto cero, un repo conforme al baseline y ya inventariado para la
+gobernanza?
 
 > Esta decisión es ortogonal a [[0002]] §A.3 (*restricción de quién puede crear repos*),
 > que sigue diferida por limitación del plan. A.3 limita el acceso a la creación; este ADR
@@ -52,9 +52,9 @@ Heredados de [[0001]], con su orden de prioridad:
   parametrización, no aplican settings ni registran el repo en el inventario, y exigen
   mantener tantas plantillas como tipos.
 
-- **B. Flujo de creación centralizado en el repo de gobernanza**: una acción manual,
-  parametrizada por tipo de repo, que crea el repo, le aplica los settings que el baseline
-  org no cubre, scaffoldea su CI/CD y lo registra en el inventario de una vez.
+- **B. Flujo de creación centralizado en el repo de gobernanza**: una acción manual que
+  crea el repo, le aplica los settings que el baseline org no cubre, scaffoldea el baseline
+  y lo registra en el inventario de una vez.
   Reaprovecha la maquinaria de sync y drift ya existente y deja una sola fuente que
   mantener. Requiere construirlo y otorgar privilegio de creación a una identidad de
   automatización.
@@ -75,44 +75,26 @@ Heredados de [[0001]], con su orden de prioridad:
 Se adopta la **opción B — flujo de creación centralizado en el repo de gobernanza**, con
 estas características de diseño a nivel de decisión:
 
-1. **Introducir el concepto de "arquetipo".** El inventario de gobernanza ya clasifica los
-   repos por *stack* (el eje del sync). El arquetipo es una capa adicional, propia de la
-   **creación**, que determina qué CI/CD y qué configuración recibe un repo según su tipo
-   funcional. Se definen seis arquetipos para la primera versión:
-
-   | Arquetipo | Propósito |
-   |---|---|
-   | servicio de negocio .NET | servicio de aplicación (típicamente CQRS), containerizado y desplegado |
-   | librería .NET (NuGet) | librería publicada como paquete, sin despliegue |
-   | frontend | SPA desplegado como sitio estático |
-   | gateway | gateway empaquetado como contenedor, sin código de aplicación propio |
-   | infraestructura | infraestructura como código de un bounded context |
-   | placeholder | repo sin código de aplicación aún (docs/diagramas), solo baseline |
-
-   El catálogo de arquetipos es ampliable; nuevos tipos se añaden cuando el portafolio lo
-   pida.
-
-2. **El inventario es fuente de verdad desde la creación.** El flujo registra el repo nuevo
+1. **El inventario es fuente de verdad desde la creación.** El flujo registra el repo nuevo
    en el inventario como parte del acto de crearlo (forward), de modo que el sync y el
    drift-check lo gobiernan inmediatamente. El mecanismo de detección post-hoc existente se
    conserva solo para incorporar repos heredados (backfill).
 
-3. **Identidad de automatización como excepción acotada a la regla de no-push.** El commit
+2. **Identidad de automatización como excepción acotada a la regla de no-push.** El commit
    inicial de un repo recién creado no puede entrar por PR (no existe aún una rama base
    contra la cual abrirlo). Se autoriza a la identidad de automatización del proceso a
    sembrar ese **primer commit** de la rama por defecto como excepción explícita y auditable
    a [[0002]] §B.1. Todo cambio posterior — incluido el registro del repo en el inventario —
    sigue pasando por PR. La excepción se limita al bootstrap y a esa única identidad.
 
-4. **Checks requeridos por arquetipo, aplicados al crear.** Cada arquetipo declara qué
-   checks de su CI/CD se marcan como requeridos en el repo nuevo, materializando [[0002]]
-   §D.1 desde la creación en lugar de delegarlo a una configuración manual posterior.
+> El alcance del scaffold y los checks que aplica la creación se definen en [[0005]]
+> (baseline de seguridad, sin arquetipos). Ver Control de cambios.
 
 ## Consecuencias
 
-- ✅ Un repo nace conforme al baseline, con su CI/CD y sus checks, y ya inventariado: se
-  cierra la ventana entre "repo creado" y "repo gobernado".
-- ✅ Crear un repo pasa a ser una sola acción guiada por tipo, reduciendo la fricción y el
+- ✅ Un repo nace conforme al baseline y ya inventariado: se cierra la ventana entre "repo
+  creado" y "repo gobernado".
+- ✅ Crear un repo pasa a ser una sola acción guiada, reduciendo la fricción y el
   conocimiento tácito requerido.
 - ✅ Reaprovecha la maquinaria de gobernanza existente (inventario + sync + drift) en vez de
   introducir un sistema paralelo.
@@ -126,11 +108,7 @@ estas características de diseño a nivel de decisión:
   ese registro de inmediato.
 - ⚠️ **Contrato de nombres de checks.** Marcar checks como requeridos depende de que su
   identificador coincida exactamente con el que reporta la plataforma; un desajuste bloquea
-  merges hasta corregirlo. Mitigación: verificar empíricamente tras el primer cambio y poder
-  desactivar este paso.
-- ⚠️ **Scaffold como plantilla parametrizada.** Las plantillas de cada arquetipo viven en un
-  repo de visibilidad pública (ver [[0001]]); por eso contienen solo forma y marcadores, sin
-  valores sensibles de ningún bounded context.
+  merges hasta corregirlo. Mitigación: verificar empíricamente tras el primer cambio.
 
 ## Referencias
 
@@ -138,3 +116,15 @@ estas características de diseño a nivel de decisión:
 - [[0002]] — Políticas de repositorios: ambiente de desarrollo (§A.3, §B.1, §C.4–C.6, §D.1,
   §D.7, §E.3).
 - [[0003]] — Políticas de repositorios: ambiente de producción (§A.3, §D.2).
+- [[0005]] — Golden path: scaffold mínimo (refina esta decisión; ver Control de cambios).
+
+## Control de cambios
+
+- **2026-05-30** — Se retiran del cuerpo dos características de diseño invalidadas por
+  [[0005]] (que minimiza el golden path a baseline + seguridad): el **concepto de
+  "arquetipo"** (capa de scaffold por tipo de repo, con su catálogo de seis tipos) y los
+  **checks requeridos por arquetipo**. La creación deja de scaffoldear CI/CD por tipo y de
+  declarar checks por arquetipo; el resto de la decisión —flujo centralizado, inventario
+  como fuente de verdad e identidad de automatización como excepción al no-push— sigue
+  vigente. Se eliminó también el catálogo de plantillas de arquetipos. El contexto, las
+  opciones y las consecuencias que asumían ese modelo se ajustaron en consecuencia.

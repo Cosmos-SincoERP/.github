@@ -59,7 +59,7 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 #### A.3 — Política de creación de repositorios
 - **Decisión**: Diferir a [[0003]] — bloqueado por limitación del plan Team.
 - **Justificación**: la intención original (restringir creación pública preservando creación privada) no es expresable en el plan Team; los toggles granulares disponibles no permiten esa combinación. Las opciones reales bajo Team son aceptar el riesgo (estado actual) o bloquear toda creación (rompe la autonomía privada que se quería preservar). Se difiere a [[0003]] para reevaluar con upgrade Enterprise.
-- **Nota**: esta entrada cubre la *restricción de quién puede crear* repos. La *habilitación del proceso* de creación conforme (golden path por arquetipo) se decide en [[0004]] y es ortogonal a esta restricción.
+- **Nota**: esta entrada cubre la *restricción de quién puede crear* repos. La *habilitación del proceso* de creación conforme (golden path) se decide en [[0004]] (refinado por [[0005]]) y es ortogonal a esta restricción.
 
 #### A.4 — Política de outside collaborators
 - **Decisión**: Aplicar (org) — Fase 1.
