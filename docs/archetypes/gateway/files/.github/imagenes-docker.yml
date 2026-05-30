@@ -1,5 +1,0 @@
-# Imagen del gateway nginx. El Dockerfile vive en la raíz del repo.
-imagenes:
-  - name: {{BC_KEY}}-gateway
-    dockerfile: Dockerfile
-    context: .

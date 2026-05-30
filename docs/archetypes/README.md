@@ -9,7 +9,12 @@ gobernanza. El arquetipo es el concepto de **creación**: mapea a un `stack` +
 `overrides` por defecto + los workflows/archivos a scaffoldear + los checks que
 se marcan como required en el repo nuevo.
 
-Ver el ADR [`0004`](../adr/0004-creacion-automatizada-repositorios.md).
+Ver los ADR [`0004`](../adr/0004-creacion-automatizada-repositorios.md) y [`0005`](../adr/0005-golden-path-scaffold-minimo.md).
+
+> **Arquetipos de Swarm (`dotnet-service`, `gateway`)**: su scaffold trae solo el baseline
+> + seguridad (+ skeleton de app). El CI/CD de build/deploy a Swarm **no** se scaffoldea —
+> lo agregan las skills de onboarding (`/onboard-dotnet-repo`, `/onboard-gateway-repo`)
+> post-infra. Ver ADR 0005.
 
 ## Estructura de un arquetipo
 
