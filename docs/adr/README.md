@@ -29,7 +29,7 @@ Numeración propia del repo, secuencial desde `0001`. Cada nuevo ADR toma el sig
 3. Abrir PR contra `main` con el ADR en `status: proposed`.
 4. Discusión y ajustes en el PR.
 5. Cuando se aprueba, cambiar a `status: accepted` antes de mergear.
-6. Si un ADR posterior supersede uno previo: el viejo cambia a `status: superseded` y se referencia el reemplazo; el nuevo referencia al viejo.
+6. Cuando una decisión posterior invalida una previa **no** se deja el ADR viejo en pie marcándolo `superseded`: si queda **totalmente** invalidado se **elimina**; si queda **parcialmente** invalidado se **borra del cuerpo la sección que ya no es coherente** y se documenta el recorte en una sección **Control de cambios** del propio ADR (fecha + qué se retiró + ADR que lo motiva). El objetivo es que una lectura del ADR —en especial por un LLM— nunca encuentre contenido obsoleto que induzca decisiones inconsistentes.
 
 ## Convención de referencias cruzadas
 

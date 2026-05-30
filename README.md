@@ -17,7 +17,7 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 ├── .github/
 │   ├── workflows/
 │   │   ├── _reusable-*.yml          # 10 reusables migrados desde Cosmos.PlatformWorkflows
-│   │   ├── create-repo.yml          # Golden path: crea repos gobernados por arquetipo
+│   │   ├── create-repo.yml          # Golden path: crea repos gobernados (baseline de seguridad)
 │   │   ├── sync-governance.yml      # Propaga cambios a repos consumidores
 │   │   ├── drift-check-governance.yml  # Reporta drift semanalmente
 │   │   └── README.md                # Doc de los reusables (catálogo + uso)
@@ -35,10 +35,8 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 │   │   ├── 0001-marco-gobernanza-repositorios.md
 │   │   ├── 0002-politicas-repositorios-desarrollo.md
 │   │   ├── 0003-politicas-repositorios-produccion.md
-│   │   └── 0004-creacion-automatizada-repositorios.md
-│   ├── archetypes/                   # Plantillas de creación por arquetipo (golden path)
-│   │   ├── README.md                 # Esquema de archetype.yml + sustitución
-│   │   └── <arquetipo>/              # archetype.yml + files/ (scaffold con placeholders)
+│   │   ├── 0004-creacion-automatizada-repositorios.md
+│   │   └── 0005-golden-path-scaffold-minimo.md
 │   ├── templates/                    # Plantillas de configuración por stack (sync source)
 │   │   ├── dependabot-dotnet.yml
 │   │   ├── dependabot-node-bun.yml
@@ -69,25 +67,24 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 ## Golden path: crear un repo nuevo
 
 Para crear un repo ya gobernado, usar el workflow **`create-repo.yml`**
-(`workflow_dispatch`). Dado un **arquetipo** (`dotnet-service`, `dotnet-library-nuget`,
-`frontend`, `gateway`, `infra`, `placeholder`), el flujo:
+(`workflow_dispatch`). Solo pide el **nombre del repo** (y un `dry_run`); el flujo:
 
-1. Crea el repo (privado por defecto) en la org.
+1. Crea el repo (privado) en la org.
 2. Aplica los settings que el ruleset org no cubre: squash-only, auto-merge y auto-delete
    de la rama al mergear.
-3. Scaffoldea el baseline del arquetipo — `security-checks.yml` (+ skeleton de app donde
-   aplique, p. ej. `Dockerfile`/`nginx.conf` del gateway) — y hace el **commit inicial de
-   `main`** (la App es bypass actor del ruleset org; de ahí en adelante todo entra por PR).
-   El `dependabot.yml` lo coloca el sync; el CI/CD de Swarm de `dotnet-service`/`gateway`
-   lo agregan las skills de onboarding post-infra (ver ADR 0005).
+3. Scaffoldea el **baseline de seguridad** (`security-checks.yml`) y hace el **commit
+   inicial de `main`** (la App es bypass actor del ruleset org; de ahí en adelante todo
+   entra por PR). El `dependabot.yml` lo coloca el sync. El golden path **no** crea CI/CD de
+   negocio ni de devops (build/deploy/publish/terraform): eso lo añaden las skills de
+   onboarding o el equipo, post-infra (ver ADR 0005).
 4. Registra la entrada en `docs/repos-manifest.yml` **vía PR en este repo** (con
    **auto-merge** habilitado: se mergea solo en cuanto pasan los checks) — a partir de ahí
    el sync y el drift-check ya gobiernan el repo nuevo.
-5. Crea un repo-level ruleset con los **required status checks** del arquetipo.
+5. Crea un repo-level ruleset con los **required status checks** del baseline de seguridad.
 
-El input `dry_run` (por defecto `true`) valida y muestra el plan sin crear nada. Las
-plantillas y el esquema de arquetipos viven en [`docs/archetypes/`](docs/archetypes/).
-Decisión de diseño en [`docs/adr/0004-creacion-automatizada-repositorios.md`](docs/adr/0004-creacion-automatizada-repositorios.md).
+El input `dry_run` (por defecto `true`) valida y muestra el plan sin crear nada. Decisiones
+de diseño en [`docs/adr/0004-creacion-automatizada-repositorios.md`](docs/adr/0004-creacion-automatizada-repositorios.md)
+y [`docs/adr/0005-golden-path-scaffold-minimo.md`](docs/adr/0005-golden-path-scaffold-minimo.md).
 
 ### Precondiciones (configuración fuera del repo)
 
