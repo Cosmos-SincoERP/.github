@@ -1,4 +1,4 @@
-name: Crear repo (golden path)
+name: Crear repo
 
 # Golden path de creación de repos gobernados. Crea el repo, aplica settings,
 # scaffoldea el baseline de seguridad (security-checks.yml), hace el commit inicial
