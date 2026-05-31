@@ -7,8 +7,8 @@ concurrency:
 # Despliega un SPA construido con Bun a un Storage Account static website
 # siguiendo el patrón "build once, deploy anywhere":
 #   - Bundle inmutable subido a $web/<app_name>/releases/<sha>/ con Cache-Control
-#     immutable. El prefijo `<app_name>/` permite hospedar varios fronts en el
-#     mismo Storage Account (un SA compartido por proyecto).
+#     immutable. El prefijo `<app_name>/` permite hospedar todos los fronts del
+#     plane en un único Storage Account compartido (`stfrontappldeveus2001`).
 #   - env.js (config runtime) generado desde KV y subido a $web/<app_name>/env.js
 #     con no-cache.
 #   - Activación atómica: copia server-side de <app_name>/releases/<sha>/index.html
@@ -40,14 +40,12 @@ concurrency:
 #
 # Auth: Managed Identity del runner self-hosted (label `swarm-deploy`).
 # Primer step del job `deploy`: `az login --identity`. La MI del runner debe tener:
-#   - `Storage Blob Data Contributor` sobre la SA del front. Lo provisiona
-#     el módulo TF `cosmos_front_app` cuando se le pasa la MI del runner
-#     como `principal_id`. ⚠️ Verificación pendiente: hoy el módulo se lo
-#     asigna a `data.azurerm_client_config.current.object_id` (= SP de
-#     tfops que aplica TF), no a la MI del runner. Para el primer deploy,
-#     o se extiende el módulo aceptando `vm_principal_id` como input, o
-#     se asigna manualmente con `az role assignment create` (ver §5b paso
-#     2 del workflows README).
+#   - `Storage Blob Data Contributor` sobre el SA compartido de fronts
+#     `stfrontappldeveus2001` (RG `rg-appl-dev-eus2-001`), aprovisionado por
+#     la infra de ApplicationPlane. ⚠️ Verificación pendiente: hoy ese rol
+#     lo tiene el SP de tfops, no la MI del runner del BC. Para el primer
+#     deploy de cada BC se asigna manualmente con `az role assignment create`
+#     (ver §5b paso 2 del workflows README).
 #   - `Key Vault Secrets User` sobre el KV de environment. Lo otorga
 #     `module.key_vault.vm_secrets_user` (ya cubierto desde Radicacion).
 # Alineado con `_reusable-deploy-swarm.yml` y `_reusable-cleanup-acr-pr.yml`.
@@ -69,16 +67,17 @@ on:
         required: true
       storage_account_name:
         description: |
-          Nombre del Storage Account (output `front_<app>_account_name` del
-          módulo TF `cosmos_front_app`). Convención: stfe<project><env><region>001.
-          Ej: stfe<bc-key>deveus2001.
+          Nombre del Storage Account de fronts. Hoy es un único SA compartido
+          por todos los fronts del plane: `stfrontappldeveus2001`
+          (RG `rg-appl-dev-eus2-001`), aprovisionado por la infra de
+          ApplicationPlane. Los fronts se namespacean por el prefijo `<app_name>/`.
         type: string
         required: true
       web_endpoint:
         description: |
           URL completa donde el front quedará servido (incluye el prefijo
           `<app_name>/`). Se usa para el smoke test post-deploy.
-          Ej: https://stfe<bc-key>deveus2001.z20.web.core.windows.net/<bc-key>/
+          Ej: https://stfrontappldeveus2001.z20.web.core.windows.net/<app_name>/
         type: string
         required: true
       key_vault_name:
