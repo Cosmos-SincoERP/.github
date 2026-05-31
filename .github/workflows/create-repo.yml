@@ -1,9 +1,9 @@
 name: Crear repo
 
-# Golden path de creación de repos gobernados. Crea el repo, aplica settings,
+# Creación de repos gobernados. Crea el repo, aplica settings,
 # scaffoldea el baseline de seguridad (security-checks.yml), hace el commit inicial
 # de main (la App es bypass actor del ruleset org) y registra la entrada en el
-# manifest vía PR. El CI/CD de negocio/devops NO lo crea el golden path: se añade
+# manifest vía PR. El CI/CD de negocio/devops NO lo crea este flujo: se añade
 # aparte (skills de onboarding o a mano). Ver ADR 0004 y ADR 0005.
 #
 # Precondiciones (configuración fuera del repo, ver ADR 0004 §precondiciones):

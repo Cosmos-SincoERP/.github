@@ -6,7 +6,7 @@ consulted: []
 informed: []
 ---
 
-# 0004 — Golden path de creación de repositorios
+# 0004 — Creación automatizada de repositorios
 
 ## Contexto y problema
 
@@ -28,7 +28,7 @@ gobernanza?
 
 > Esta decisión es ortogonal a [[0002]] §A.3 (*restricción de quién puede crear repos*),
 > que sigue diferida por limitación del plan. A.3 limita el acceso a la creación; este ADR
-> define el **proceso** de creación conforme. Cuando A.3 se active, este golden path será
+> define el **proceso** de creación conforme. Cuando A.3 se active, este flujo será
 > el canal natural por el que pase esa creación.
 
 ## Drivers de decisión
@@ -116,12 +116,12 @@ estas características de diseño a nivel de decisión:
 - [[0002]] — Políticas de repositorios: ambiente de desarrollo (§A.3, §B.1, §C.4–C.6, §D.1,
   §D.7, §E.3).
 - [[0003]] — Políticas de repositorios: ambiente de producción (§A.3, §D.2).
-- [[0005]] — Golden path: scaffold mínimo (refina esta decisión; ver Control de cambios).
+- [[0005]] — Creación de repos: scaffold mínimo (refina esta decisión; ver Control de cambios).
 
 ## Control de cambios
 
 - **2026-05-30** — Se retiran del cuerpo dos características de diseño invalidadas por
-  [[0005]] (que minimiza el golden path a baseline + seguridad): el **concepto de
+  [[0005]] (que minimiza la creación a baseline + seguridad): el **concepto de
   "arquetipo"** (capa de scaffold por tipo de repo, con su catálogo de seis tipos) y los
   **checks requeridos por arquetipo**. La creación deja de scaffoldear CI/CD por tipo y de
   declarar checks por arquetipo; el resto de la decisión —flujo centralizado, inventario
