@@ -10,17 +10,15 @@ on:
       acr_name:
         description: "Nombre del ACR (sin .azurecr.io)."
         type: string
-        required: false
-        # Default histórico de OXP. Todo wrapper generado por la skill
-        # `onboard-dotnet-repo` versión bc-aware pasa este input via `with:`
-        # explícitamente desde el catálogo `bounded-contexts.yml`.
-        default: "croxpdeveus2001"
+        # Sin default: cada caller lo pasa explícitamente desde el catálogo
+        # `bounded-contexts.yml` (lo inyectan los wrappers de onboard-*), para
+        # que el reusable no quede acoplado a ningún BC concreto.
+        required: true
       repository_prefix:
-        description: "Prefijo común de los repositorios a barrer (ej: 'oxp')."
+        description: "Prefijo común de los repositorios a barrer (ej: '<bc-key>')."
         type: string
-        required: false
-        # Default histórico de OXP — ver nota en `acr_name`.
-        default: "oxp"
+        # Sin default — ver nota en `acr_name`.
+        required: true
       repositories_json:
         description: |
           JSON array con los nombres de repositorios (sin prefijo) a limpiar.

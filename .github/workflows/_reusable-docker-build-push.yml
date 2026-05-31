@@ -18,17 +18,15 @@ on:
       acr_name:
         description: "Nombre del ACR (sin .azurecr.io)."
         type: string
-        required: false
-        # Default histórico de OXP. Todo wrapper generado por la skill
-        # `onboard-dotnet-repo` versión bc-aware pasa este input via `with:`
-        # explícitamente desde el catálogo `bounded-contexts.yml`.
-        default: "croxpdeveus2001"
+        # Sin default: cada caller lo pasa explícitamente desde el catálogo
+        # `bounded-contexts.yml` (lo inyectan los wrappers de onboard-*), para
+        # que el reusable no quede acoplado a ningún BC concreto.
+        required: true
       repository_prefix:
         description: "Prefijo del repositorio en ACR. Las imágenes serán {acr}.azurecr.io/{prefix}/{name}:{tag}."
         type: string
-        required: false
-        # Default histórico de OXP — ver nota en `acr_name`.
-        default: "oxp"
+        # Sin default — ver nota en `acr_name`.
+        required: true
       ref_context_override:
         description: "Forzar el contexto del ref (si se omite, se calcula desde el evento: pr-{n}, main, manual)."
         type: string
@@ -48,9 +46,8 @@ on:
           En contextos multi-dominio sobre la misma VM, cada dominio debería
           tener su propio builder para no compartir cache.
         type: string
-        required: false
-        # Default histórico de OXP — ver nota en `acr_name`.
-        default: "oxp-builder"
+        # Sin default — ver nota en `acr_name`.
+        required: true
       runner_group:
         description: |
           Runner group de GitHub Actions donde correr el job de build/push
