@@ -17,12 +17,12 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 ├── .github/
 │   ├── workflows/
 │   │   ├── _reusable-*.yml          # 10 reusables migrados desde Cosmos.PlatformWorkflows
-│   │   ├── create-repo.yml          # Golden path: crea repos gobernados (baseline de seguridad)
+│   │   ├── create-repo.yml          # Crea repos gobernados (baseline de seguridad)
 │   │   ├── sync-governance.yml      # Propaga cambios a repos consumidores
 │   │   ├── drift-check-governance.yml  # Reporta drift semanalmente
 │   │   └── README.md                # Doc de los reusables (catálogo + uso)
 │   └── scripts/
-│       ├── create-repo.sh           # Lógica del golden path de creación
+│       ├── create-repo.sh           # Lógica de la creación de repos
 │       ├── sync-governance.sh       # Lógica del sync
 │       ├── drift-check-governance.sh
 │       ├── scan-repo.sh             # Helper de onboarding: propone bloque manifest
@@ -36,7 +36,7 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 │   │   ├── 0002-politicas-repositorios-desarrollo.md
 │   │   ├── 0003-politicas-repositorios-produccion.md
 │   │   ├── 0004-creacion-automatizada-repositorios.md
-│   │   └── 0005-golden-path-scaffold-minimo.md
+│   │   └── 0005-creacion-repos-scaffold-minimo.md
 │   ├── templates/                    # Plantillas de configuración por stack (sync source)
 │   │   ├── dependabot-dotnet.yml
 │   │   ├── dependabot-node-bun.yml
@@ -64,7 +64,7 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 - [`.github/workflows/sync-governance.yml`](.github/workflows/sync-governance.yml) — propaga cambios. Triggers: push a `main` con cambios en templates/manifest/reusables, o `workflow_dispatch` (con `dry_run`).
 - [`.github/workflows/drift-check-governance.yml`](.github/workflows/drift-check-governance.yml) — cron semanal. Reporta drift en una issue actualizable de este repo.
 
-## Golden path: crear un repo nuevo
+## Crear un repo nuevo
 
 Para crear un repo ya gobernado, usar el workflow **`create-repo.yml`**
 (`workflow_dispatch`). Solo pide el **nombre del repo** (y un `dry_run`); el flujo:
@@ -74,7 +74,7 @@ Para crear un repo ya gobernado, usar el workflow **`create-repo.yml`**
    de la rama al mergear.
 3. Scaffoldea el **baseline de seguridad** (`security-checks.yml`) y hace el **commit
    inicial de `main`** (la App es bypass actor del ruleset org; de ahí en adelante todo
-   entra por PR). El `dependabot.yml` lo coloca el sync. El golden path **no** crea CI/CD de
+   entra por PR). El `dependabot.yml` lo coloca el sync. El flujo de creación **no** crea CI/CD de
    negocio ni de devops (build/deploy/publish/terraform): eso lo añaden las skills de
    onboarding o el equipo, post-infra (ver ADR 0005).
 4. Registra la entrada en `docs/repos-manifest.yml` **vía PR en este repo** (con
@@ -84,7 +84,7 @@ Para crear un repo ya gobernado, usar el workflow **`create-repo.yml`**
 
 El input `dry_run` (por defecto `true`) valida y muestra el plan sin crear nada. Decisiones
 de diseño en [`docs/adr/0004-creacion-automatizada-repositorios.md`](docs/adr/0004-creacion-automatizada-repositorios.md)
-y [`docs/adr/0005-golden-path-scaffold-minimo.md`](docs/adr/0005-golden-path-scaffold-minimo.md).
+y [`docs/adr/0005-creacion-repos-scaffold-minimo.md`](docs/adr/0005-creacion-repos-scaffold-minimo.md).
 
 ### Precondiciones (configuración fuera del repo)
 
@@ -111,7 +111,7 @@ creación, distinto al de la App del sync.
 
 ## Operación: onboarding (backfill) de un repo legacy al manifest
 
-Para repos que ya existen pero no nacieron por el golden path, `scan-repo.sh` propone el
+Para repos que ya existen pero no nacieron por este flujo, `scan-repo.sh` propone el
 bloque YAML listo para pegar en `docs/repos-manifest.yml` haciendo un clone shallow del repo
 e infiriendo stack + overrides.
 

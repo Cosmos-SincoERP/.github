@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# create-repo.sh — golden path de creación de repos gobernados.
+# create-repo.sh — creación de repos gobernados.
 # Invocado por .github/workflows/create-repo.yml. Ver ADR 0004 y ADR 0005.
 #
 # Crea un repo nuevo en la org, le aplica los settings que el ruleset org no cubre,
@@ -7,7 +7,7 @@
 # `main` (la App es bypass actor del ruleset org) y registra la entrada en el manifest de
 # `.github` vía PR. Idempotente: re-correr tras un fallo parcial continúa.
 #
-# El golden path NO crea CI/CD de negocio ni de devops (build/deploy/nuget/terraform): el
+# Este flujo NO crea CI/CD de negocio ni de devops (build/deploy/nuget/terraform): el
 # repo nace solo con el baseline de seguridad. El resto del CI/CD lo añaden las skills de
 # onboarding o el equipo cuando el código aterriza. Ver ADR 0005.
 #
@@ -36,7 +36,7 @@ WORK_DIR="/tmp/create-repo-work"
 #   equipo aterriza su código y actualiza el manifest, el sync re-renderiza el dependabot
 #   del stack real. REQUIRED_CHECKS — los checks de seguridad del security-checks.yml
 #   gestionado (formato `<job-caller> / <job-del-reusable>`); son los únicos required que
-#   aplica el golden path.
+#   aplica la creación.
 STACK="github-actions"
 REQUIRED_CHECKS=("dependency-review / trivy" "secret-scan / trufflehog")
 
@@ -79,7 +79,7 @@ render_scaffold() {
   # primera corrida del sync que dispara el merge del PR de manifest. Ver ADR 0005.
 
   # security-checks.yml (gestionado; idéntico al template del sync). Es el único artefacto
-  # que scaffoldea el golden path: baseline + seguridad, nada de CI/CD. Ver ADR 0005.
+  # que scaffoldea la creación: baseline + seguridad, nada de CI/CD. Ver ADR 0005.
   mkdir -p "$SCAFFOLD_DIR/.github/workflows"
   cp "$TEMPLATES_DIR/security-checks.yml" "$SCAFFOLD_DIR/.github/workflows/security-checks.yml"
   log "  + .github/workflows/security-checks.yml"
@@ -146,7 +146,7 @@ push_initial_main() {
     git checkout -b main
     cp -r "$SCAFFOLD_DIR/." .
     git add -A
-    git commit -q -m "chore: scaffold inicial (baseline de seguridad) vía golden path"
+    git commit -q -m "chore: scaffold inicial (baseline de seguridad)"
     # La App debe estar en la bypass list del ruleset org (~DEFAULT_BRANCH).
     git push -q origin main \
       || die "push a main rechazado. ¿La App está en la bypass list del ruleset org B.1?"
@@ -171,7 +171,7 @@ register_in_manifest() {
 
   local entry
   entry="$(emit_manifest_entry "$REPO_NAME" "$STACK")"
-  entry="  # creado por golden path (baseline)"$'\n'"$entry"
+  entry="  # creado por create-repo (baseline)"$'\n'"$entry"
 
   if [ "$DRY_RUN" = "true" ]; then
     log "DRY-RUN: añadiría al manifest la entrada:"
@@ -213,7 +213,7 @@ register_in_manifest() {
   local existing_pr pr_body pr_number=""
   existing_pr="$(gh pr list --repo "$SELF_REPO" --head "$BRANCH" --state open --json number --jq '.[0].number' 2>/dev/null || echo "")"
   pr_body="$(cat <<EOF
-Onboarding automático de \`$OWNER_REPO\` al manifest, generado por el golden path
+Onboarding automático de \`$OWNER_REPO\` al manifest, generado por la creación de repos
 (\`create-repo.yml\`) desde \`$SELF_REPO@${RUN_SHA:0:7}\`.
 
 - **Stack**: \`$STACK\` (baseline; el sync ajusta el dependabot al stack real cuando el
@@ -313,7 +313,7 @@ apply_required_checks() {
 emit_step_summary() {
   [ -n "${GITHUB_STEP_SUMMARY:-}" ] || return 0
   {
-    echo "# Golden path — creación de \`$REPO_NAME\`"
+    echo "# Creación de \`$REPO_NAME\`"
     echo
     echo "- Baseline de seguridad (stack \`$STACK\`)"
     echo "- Visibilidad: **$VISIBILITY**"
