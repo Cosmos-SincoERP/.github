@@ -1,0 +1,118 @@
+name: npm publish (reusable)
+
+# Publica una librería npm del org usando Changesets.
+# - Push a main con changesets pendientes  -> abre/actualiza el PR "Version Packages".
+# - Merge del PR "Version Packages"          -> publica el/los paquete(s) a npm.
+# El consumidor lo invoca desde un workflow `on: push: branches: [main]`.
+# Requiere el secret NPM_TOKEN (automation token del registro destino).
+
+concurrency:
+  group: release-${{ github.workflow }}
+  cancel-in-progress: false
+
+on:
+  workflow_call:
+    inputs:
+      working_directory:
+        description: "Directorio del package.json / .changeset (relativo al checkout)."
+        type: string
+        required: false
+        default: "."
+      bun_version:
+        description: "Versión de Bun a instalar."
+        type: string
+        required: false
+        default: "latest"
+      npm_registry:
+        description: "Registro npm destino. Default: npm público."
+        type: string
+        required: false
+        default: "https://registry.npmjs.org"
+      version_command:
+        description: "Comando que aplica los changesets (bump + CHANGELOG)."
+        type: string
+        required: false
+        default: "bun run version-packages"
+      publish_command:
+        description: "Comando que buildea y publica (changeset publish)."
+        type: string
+        required: false
+        default: "bun run release"
+    secrets:
+      NPM_TOKEN:
+        description: "Automation token con permiso de publish al registro."
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    name: Changesets (version PR / publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun ${{ inputs.bun_version }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ inputs.bun_version }}
+
+      - name: Cache de Bun
+        uses: actions/cache@v5
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles(format('{0}/bun.lock', inputs.working_directory)) }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Configurar auth de npm
+        shell: bash
+        env:
+          NPM_REGISTRY: ${{ inputs.npm_registry }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          host="${NPM_REGISTRY#http*://}"
+          host="${host%/}"
+          printf '//%s/:_authToken=%s\n' "$host" "$NPM_TOKEN" > "$HOME/.npmrc"
+          printf 'registry=%s\n' "$NPM_REGISTRY" >> "$HOME/.npmrc"
+
+      - name: Changesets (version PR o publish)
+        uses: changesets/action@v1
+        with:
+          cwd: ${{ inputs.working_directory }}
+          version: ${{ inputs.version_command }}
+          publish: ${{ inputs.publish_command }}
+          commit: "chore(release): versionar paquetes"
+          title: "chore(release): versionar paquetes"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Resumen
+        if: always()
+        shell: bash
+        env:
+          WD: ${{ inputs.working_directory }}
+          REGISTRY: ${{ inputs.npm_registry }}
+        run: |
+          {
+            echo "## npm publish (Changesets)"
+            echo ""
+            echo "- Directorio: \`$WD\`"
+            echo "- Registro: \`$REGISTRY\`"
+            echo "- Con changesets pendientes -> se abrió/actualizó el PR \"Version Packages\"."
+            echo "- Sin changesets -> se publicó la versión vigente."
+          } >> "$GITHUB_STEP_SUMMARY"
