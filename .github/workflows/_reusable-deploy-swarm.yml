@@ -36,19 +36,15 @@ on:
       acr_name:
         description: "Nombre del ACR (sin .azurecr.io)."
         type: string
-        required: false
-        # Default histórico de OXP. Todo wrapper generado por la skill
-        # `onboard-dotnet-repo` versión bc-aware pasa este input via `with:`
-        # explícitamente desde el catálogo `bounded-contexts.yml`. Cuando todos
-        # los wrappers en repos OPP se regeneren con esa skill, considerar
-        # remover este default y hacer el input `required: true`.
-        default: "croxpdeveus2001"
+        # Sin default: cada caller lo pasa explícitamente desde el catálogo
+        # `bounded-contexts.yml` (lo inyectan los wrappers de onboard-*), para
+        # que el reusable no quede acoplado a ningún BC concreto.
+        required: true
       repository_prefix:
         description: "Prefijo de los repositorios. Se inyecta como REPOSITORY_PREFIX en el compose."
         type: string
-        required: false
-        # Default histórico de OXP — ver nota en `acr_name`.
-        default: "oxp"
+        # Sin default — ver nota en `acr_name`.
+        required: true
       env_vars_json:
         description: "JSON object con variables de entorno extra a inyectar (key/value strings)."
         type: string
@@ -62,9 +58,8 @@ on:
       key_vault_name:
         description: "Nombre del Key Vault desde donde leer los secretos a materializar como Docker Swarm secrets."
         type: string
-        required: false
-        # Default histórico de OXP — ver nota en `acr_name`.
-        default: "kv-oxp-dev-eus2-001"
+        # Sin default — ver nota en `acr_name`.
+        required: true
       secret_names:
         description: |
           Lista separada por espacios de nombres de secretos en el Key Vault que el stack consume.
@@ -81,9 +76,8 @@ on:
           Se usa también para identificar los secrets propios al hacer GC de huérfanos.
           En contextos multi-dominio sobre la misma VM, cada dominio debe usar su propio prefijo.
         type: string
-        required: false
-        # Default histórico de OXP — ver nota en `acr_name`.
-        default: "oxp"
+        # Sin default — ver nota en `acr_name`.
+        required: true
       runner_group:
         description: |
           Runner group de GitHub Actions donde correr el job (ej. `swarm-deploy-appl`,

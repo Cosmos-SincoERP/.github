@@ -60,7 +60,7 @@ on:
         description: |
           Identificador corto del front (alfanumérico minúscula, 2-8 chars).
           Se usa para nombrar los secrets en Key Vault (`front-<app>-...`)
-          y como prefijo de path en `$web/<app_name>/...`. Ej: 'oxp', 'crm'.
+          y como prefijo de path en `$web/<app_name>/...`. Ej: '<bc-key>'.
         type: string
         required: true
       environment:
@@ -71,14 +71,14 @@ on:
         description: |
           Nombre del Storage Account (output `front_<app>_account_name` del
           módulo TF `cosmos_front_app`). Convención: stfe<project><env><region>001.
-          Ej: stfeoxpdeveus2001.
+          Ej: stfe<bc-key>deveus2001.
         type: string
         required: true
       web_endpoint:
         description: |
           URL completa donde el front quedará servido (incluye el prefijo
           `<app_name>/`). Se usa para el smoke test post-deploy.
-          Ej: https://stfeoxpdeveus2001.z20.web.core.windows.net/oxp/
+          Ej: https://stfe<bc-key>deveus2001.z20.web.core.windows.net/<bc-key>/
         type: string
         required: true
       key_vault_name:
