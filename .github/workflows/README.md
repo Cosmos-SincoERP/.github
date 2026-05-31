@@ -146,14 +146,14 @@ Despliega un stack a Docker Swarm.
 
 ### `_reusable-deploy-front.yml`
 
-Build + test + deploy de un SPA al Storage Account static website. Sigue el patrón **build once, deploy anywhere**: bundle inmutable bajo `$web/<app_name>/releases/<sha>/`, `env.js` runtime en `$web/<app_name>/env.js` con `Cache-Control: no-cache`, swap atómico del `<app_name>/index.html`. El prefijo `<app_name>/` permite hospedar varios fronts del mismo proyecto en un único Storage Account compartido. Corre en runner self-hosted (`[self-hosted, azure, swarm-deploy]`) y autentica con `az login --identity` reutilizando la Managed Identity de la VM — el mismo patrón que `_reusable-deploy-swarm.yml`. **Sin OIDC, sin GH Actions secrets de Azure.**
+Build + test + deploy de un SPA al Storage Account static website. Sigue el patrón **build once, deploy anywhere**: bundle inmutable bajo `$web/<app_name>/releases/<sha>/`, `env.js` runtime en `$web/<app_name>/env.js` con `Cache-Control: no-cache`, swap atómico del `<app_name>/index.html`. El prefijo `<app_name>/` permite hospedar todos los fronts del plane en un único Storage Account compartido (`stfrontappldeveus2001`). Corre en runner self-hosted (`[self-hosted, azure, swarm-deploy]`) y autentica con `az login --identity` reutilizando la Managed Identity de la VM — el mismo patrón que `_reusable-deploy-swarm.yml`. **Sin OIDC, sin GH Actions secrets de Azure.**
 
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|
 | `app_name` | string | **requerido** | Identificador corto (2-8 chars). Se usa para derivar el nombre de los secrets en KV (`front-<app>-...`). |
 | `environment` | string | **requerido** | Etiqueta lógica del ambiente (dev/qa/prod). Solo informativa. |
-| `storage_account_name` | string | **requerido** | Nombre del Storage Account (output `front_<app>_account_name` del módulo TF). |
-| `web_endpoint` | string | **requerido** | URL del primary web endpoint (output `front_<app>_web_endpoint`). Usado para smoke test. |
+| `storage_account_name` | string | **requerido** | SA compartido de fronts del plane: `stfrontappldeveus2001` (RG `rg-appl-dev-eus2-001`, infra de ApplicationPlane). |
+| `web_endpoint` | string | **requerido** | URL del web endpoint con el prefijo del front (`https://stfrontappldeveus2001.z20.web.core.windows.net/<app_name>/`). Usado para smoke test. |
 | `key_vault_name` | string | **requerido** | KV con los secretos de configuración del `env.js` (ej. `kv-oxp-dev-eus2-001`). |
 | `bun_version` | string | `latest` | Versión de Bun a instalar. |
 | `working_directory` | string | `.` | Directorio donde está `package.json` (y, debajo de él, `.deploy/env.js.tmpl`). |
@@ -172,7 +172,7 @@ Build + test + deploy de un SPA al Storage Account static website. Sigue el patr
 | Rol | Recurso | Estado |
 |---|---|---|
 | `Key Vault Secrets User` | KV de environment (`kv-oxp-dev-eus2-001`) | ✅ Asignado por `module.key_vault.vm_secrets_user` |
-| `Storage Blob Data Contributor` | Storage Account compartido de los fronts del proyecto (`stfeoxpdeveus2001`) | ⚠️ **Pendiente** — el módulo `cosmos_front_app` hoy se la asigna al SP de tfops, no a la MI de la VM. Hay que extender el módulo (o asignar manualmente vía `az role assignment create`) antes del primer deploy. |
+| `Storage Blob Data Contributor` | SA compartido de fronts del plane (`stfrontappldeveus2001`, RG `rg-appl-dev-eus2-001`) | ⚠️ **Pendiente** — hoy ese rol lo tiene el SP de tfops, no la MI de la VM del BC. Asignarlo manualmente vía `az role assignment create` antes del primer deploy de cada BC (ver §5b paso 2). |
 
 ### `_reusable-nuget-publish.yml`
 
@@ -374,14 +374,14 @@ Asumiendo el repo `Cosmos-SincoERP/<MiRepo>` con uno o más Dockerfiles:
 
 Asumiendo el repo `Cosmos-SincoERP/<MiFront>` con un SPA construido con Bun + Vite. **NO hay GitHub Actions secrets que configurar** — la auth a Azure se resuelve por la Managed Identity de la VM que hostea el self-hosted runner (mismo patrón que los repos .NET ya onboardeados).
 
-1. **Provisionar el Storage Account** — agregar un bloque `module "front_<app>"` en `infra/main.tf` reutilizando el módulo `cosmos_front_app` con un `app_key` corto (2-8 chars). Aplicar Terraform: el módulo crea la SA `stfe<app><env><region>001`, habilita static website, configura lifecycle de releases viejas y expone los outputs `front_<app>_account_name` y `front_<app>_web_endpoint`.
+1. **Storage Account: ya existe, es compartido** — los fronts del plane **no** provisionan un SA por proyecto. Todos comparten `stfrontappldeveus2001` (RG `rg-appl-dev-eus2-001`), aprovisionado una sola vez por la infra de **ApplicationPlane** (static website con SPA fallback `404 → index.html`, detrás del Front Door que sirve `/*`). Un front nuevo solo agrega su namespace bajo `$web/<app>/`; no requiere cambios de Terraform en el repo de Infraestructura del BC.
 
-2. **Otorgar a la MI de la VM acceso al Storage del front** — pendiente al momento del POC OXP: el módulo `cosmos_front_app` hoy le asigna `Storage Blob Data Contributor` al SP de tfops (quien aplica Terraform), pero **no a la MI de la VM** (que es quien corre el deploy desde el self-hosted runner). Mientras se extiende el módulo, asignarlo manualmente:
+2. **Otorgar a la MI de la VM del BC acceso al SA compartido** — `Storage Blob Data Contributor` sobre `stfrontappldeveus2001` lo tiene hoy el SP de tfops, **no la MI de la VM** del BC (que es quien corre el deploy desde el self-hosted runner). Hasta que se incorpore al provisioning de ApplicationPlane, asignarlo manualmente una vez por BC (acá con OXP de ejemplo: la VM vive en el RG del BC, el SA en `rg-appl-dev-eus2-001`):
 
    ```bash
    MI_PRINCIPAL_ID=$(az vm show -g rg-oxp-dev-eus2-001 -n vm-oxp-dev-eus2-001 \
      --query identity.principalId -o tsv)
-   SA_ID=$(az storage account show -g rg-oxp-dev-eus2-001 -n stfe<app>deveus2001 \
+   SA_ID=$(az storage account show -g rg-appl-dev-eus2-001 -n stfrontappldeveus2001 \
      --query id -o tsv)
    az role assignment create \
      --assignee-object-id "$MI_PRINCIPAL_ID" \
@@ -390,7 +390,7 @@ Asumiendo el repo `Cosmos-SincoERP/<MiFront>` con un SPA construido con Bun + Vi
      --scope "$SA_ID"
    ```
 
-   Cuando el patrón se generalice, mover esta asignación adentro del módulo `cosmos_front_app` aceptando `vm_principal_id` como input (mismo shape que `module.key_vault.vm_principal_id`).
+   Cuando el patrón se generalice, incorporar esta asignación al provisioning de ApplicationPlane que crea el SA (un grant por cada MI de VM de BC que despliegue fronts).
 
 3. **Declarar la plantilla del `env.js` en el repo del front** — crear `<working_directory>/.deploy/env.js.tmpl` con los placeholders `${VAR_NAME}` que la app necesite. Cero cambios en este repo de Infraestructura para agregar variables nuevas.
 
@@ -461,9 +461,10 @@ Asumiendo el repo `Cosmos-SincoERP/<MiFront>` con un SPA construido con Bun + Vi
        with:
          app_name: oxp                                  # 2-8 chars, alfanum minúscula
          environment: dev
-         storage_account_name: stfeoxpdeveus2001        # output front_oxp_account_name (SA compartido del proyecto)
-         web_endpoint: https://stfeoxpdeveus2001.z20.web.core.windows.net/oxp/
+         storage_account_name: stfrontappldeveus2001    # SA compartido de fronts del plane (RG rg-appl-dev-eus2-001)
+         web_endpoint: https://stfrontappldeveus2001.z20.web.core.windows.net/oxp/
          key_vault_name: kv-oxp-dev-eus2-001
+         runner_group: swarm-deploy-oxp                 # runner group del BC (input requerido)
    ```
 
    Notas:
