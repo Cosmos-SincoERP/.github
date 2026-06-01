@@ -89,17 +89,66 @@ jobs:
           printf '//%s/:_authToken=%s\n' "$host" "$NPM_TOKEN" > "$HOME/.npmrc"
           printf 'registry=%s\n' "$NPM_REGISTRY" >> "$HOME/.npmrc"
 
+      # Réplica de changesets/action SIN acciones de terceros (la política del org
+      # solo admite acciones de GitHub, verified o Cosmos-SincoERP/*). Usa el CLI de
+      # changesets (devDependency) + git + gh (ambos provistos por GitHub).
+      #  - Hay changesets pendientes  -> bump en una rama y abre/actualiza el "Version Packages" PR.
+      #  - No hay changesets pendientes -> publica (build + changeset publish) y empuja los tags.
       - name: Changesets (version PR o publish)
-        uses: changesets/action@v1
-        with:
-          cwd: ${{ inputs.working_directory }}
-          version: ${{ inputs.version_command }}
-          publish: ${{ inputs.publish_command }}
-          commit: "chore(release): versionar paquetes"
-          title: "chore(release): versionar paquetes"
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION_COMMAND: ${{ inputs.version_command }}
+          PUBLISH_COMMAND: ${{ inputs.publish_command }}
+          BASE_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # ¿Hay changesets pendientes? (cualquier .changeset/*.md salvo el README)
+          pending=()
+          shopt -s nullglob
+          for f in .changeset/*.md; do
+            [ "$(basename "$f")" = "README.md" ] && continue
+            pending+=("$f")
+          done
+
+          if [ ${#pending[@]} -gt 0 ]; then
+            echo "::group::Version mode (${#pending[@]} changeset(s) pendientes)"
+            release_branch="changeset-release/${BASE_BRANCH}"
+            git checkout -B "$release_branch"
+
+            eval "$VERSION_COMMAND"   # bump de package.json + CHANGELOG + consume los changesets
+
+            if git diff --quiet; then
+              echo "version-packages no produjo cambios; nada que abrir."
+              echo "::endgroup::"
+              exit 0
+            fi
+
+            git add -A
+            git commit -m "chore(release): versionar paquetes"
+            git push -f origin "$release_branch"
+
+            if gh pr view "$release_branch" --json number >/dev/null 2>&1; then
+              echo "El PR \"Version Packages\" ya existe; el push lo actualizó."
+            else
+              gh pr create \
+                --base "$BASE_BRANCH" \
+                --head "$release_branch" \
+                --title "chore(release): versionar paquetes" \
+                --body $'PR generado automáticamente por el release.\n\nAplica los changesets pendientes: sube la versión en `package.json` y actualiza el `CHANGELOG.md`.\n\nAl mergear este PR se publica el paquete a npm.'
+            fi
+            echo "::endgroup::"
+          else
+            echo "::group::Publish mode (sin changesets pendientes)"
+            eval "$PUBLISH_COMMAND"   # build + changeset publish (crea tags locales)
+            git push origin --tags || true
+            echo "::endgroup::"
+          fi
 
       - name: Resumen
         if: always()
