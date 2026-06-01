@@ -29,14 +29,14 @@ Mantener estos nombres estables es contrato público: cambiarlos rompe los Rules
 | `_reusable-bump-and-tag.yml` | `Bump SemVer + tag (reusable)` | Calcula siguiente SemVer consultando nuget.org, crea y empuja tag git, opcionalmente abre GitHub Release. | `package_id`, `tag_prefix`, `bump_type`, `initial_version`, `create_github_release` |
 | `_reusable-cleanup-acr-pr.yml` | `Cleanup ACR — tags de PR (reusable)` | Borra tags `pr-*` huérfanos en ACR (modo dirigido por PR cerrado, o barrido por edad). | `acr_name`, `repository_prefix`, `repositories_json`, `pr_number`, `keep_sha7` |
 | `_reusable-dependency-review.yml` | `Dependency Review` | Bloquea PRs que introducen dependencias vulnerables o con licencias prohibidas (ADR 0002 E.4). | `fail-on-severity`, `deny-licenses` |
-| `_reusable-deploy-front.yml` | `Deploy Front estático (reusable)` | Despliega SPA Bun a Storage Account `$web` con activación atómica y env.js generado desde Key Vault. | `app_name`, `web_endpoint`, `storage_account`, `key_vault_name`, `environment` |
+| `_reusable-deploy-front.yml` | `Deploy Front estático (reusable)` | Despliega SPA Bun a Storage Account `$web` con activación atómica y env.js generado desde Key Vault. | `app_name`, `web_endpoint`, `storage_account`, `key_vault_name`, `environment`, `github_packages` |
 | `_reusable-deploy-swarm.yml` | `Deploy a Docker Swarm (reusable)` | Despliega un stack Compose a un Docker Swarm self-hosted inyectando tags por servicio. | `stack_file`, `stack_name`, `image_tag`, `image_tags_json`, `acr_name`, `stack_environment` |
 | `_reusable-docker-build-push.yml` | `Build & Push Docker (reusable)` | Build multi-imagen contra ACR con alias mutables derivados del contexto (PR / main / manual). | `images_json`, `acr_name`, `repository_prefix`, `ref_context_override`, `mutable_alias_override` |
 | `_reusable-nuget-publish.yml` | `NuGet publish (reusable)` | Empaqueta un `.csproj` y publica al feed NuGet configurado (default nuget.org). | `project_path`, `package_version`, `dotnet_version`, `nuget_source` + secret `NUGET_API_KEY` |
 | `_reusable-npm-publish.yml` | `Publicar a <registro> (reusable)` | Publica una librería npm (no versiona): `build` + `changeset publish` (idempotente). Soporta npm público (secret `NPM_TOKEN`) y GitHub Packages (con el `GITHUB_TOKEN` del workflow). | `working_directory`, `bun_version`, `npm_registry`, `publish_command` + secret opcional `NPM_TOKEN` |
 | `_reusable-secret-scan.yml` | `Secret Scan (gitleaks)` | Mitigación open-source de secret scanning (gitleaks) para repos privados sin GHAS (ADR 0002 E.6). | `config-path` |
 | `_reusable-tests-dotnet.yml` | `Tests .NET (reusable)` | Restore + build + test de soluciones .NET, con exclusión de proyectos opcional. | `solution_path`, `working_directory`, `dotnet_version`, `configuration`, `excluded_projects` |
-| `_reusable-ci-front.yml` | `CI Front (reusable)` | Lint + test + build de fronts SPA (Bun), cada step togglable. | `working_directory`, `bun_version`, `run_lint`, `run_test`, `run_build` |
+| `_reusable-ci-front.yml` | `CI Front (reusable)` | Lint + test + build de fronts SPA (Bun), cada step togglable. | `working_directory`, `bun_version`, `run_lint`, `run_test`, `run_build`, `github_packages` |
 
 > Ejemplo de Ruleset (en el repo consumidor): para hacer required el check de un PR que invoca `_reusable-dependency-review.yml`, el repo debe listar exactamente el string **`Dependency Review`** en `required_status_checks`. El mismo principio aplica para los otros nueve.
 
@@ -101,6 +101,9 @@ Lint + test + build del front SPA con Bun en runner hosted (el CI completo del f
 | `working_directory` | string | `.` | Donde está `package.json`. |
 | `bun_version` | string | `latest` | Versión de Bun. |
 | `run_lint`, `run_test`, `run_build` | boolean | `true` | Activar/desactivar etapas. |
+| `github_packages` | boolean | `false` | Si el front consume paquetes del org desde GitHub Packages (p. ej. `@cosmos-sincoerp/asistente`). En `true`, escribe un `.npmrc` autenticado con el `GITHUB_TOKEN` antes de `bun install`. En `false` el comportamiento es idéntico al actual. |
+
+> **Consumir `@cosmos-sincoerp/*` desde GitHub Packages:** poné `github_packages: true` y agregá un `.npmrc` al repo del front (mapea el scope a `npm.pkg.github.com`). El reusable declara `packages: read`; el caller no necesita configurar secrets (usa el `GITHUB_TOKEN`). Ver el skill `publish-npm-library` para el lado productor.
 
 ### `_reusable-docker-build-push.yml`
 
@@ -158,6 +161,7 @@ Build + test + deploy de un SPA al Storage Account static website. Sigue el patr
 | `key_vault_name` | string | **requerido** | KV con los secretos de configuración del `env.js` (ej. `kv-oxp-dev-eus2-001`). |
 | `bun_version` | string | `latest` | Versión de Bun a instalar. |
 | `working_directory` | string | `.` | Directorio donde está `package.json` (y, debajo de él, `.deploy/env.js.tmpl`). |
+| `github_packages` | boolean | `false` | Si el front consume paquetes del org desde GitHub Packages. En `true`, el job `build` escribe un `.npmrc` autenticado con el `GITHUB_TOKEN` antes de `bun install` (el reusable declara `packages: read`). En `false`, sin cambios. |
 
 **Plantilla del `env.js`: propiedad de cada front**, en `<working_directory>/.deploy/env.js.tmpl` del repo del front. El reusable es **agnóstico al shape** del template: extrae los placeholders `${VAR_NAME}` con grep, deriva el nombre del secret en KV por convención y resuelve con `envsubst`.
 

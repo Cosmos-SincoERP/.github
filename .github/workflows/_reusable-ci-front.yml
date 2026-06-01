@@ -32,9 +32,24 @@ on:
         type: boolean
         required: false
         default: true
+      github_packages:
+        description: |
+          Si el front consume paquetes privados del org desde GitHub Packages
+          (p. ej. `@cosmos-sincoerp/asistente`). Cuando es `true`, escribe un
+          `.npmrc` con el scope `@cosmos-sincoerp` apuntado a npm.pkg.github.com
+          y autenticado con el GITHUB_TOKEN del workflow antes de instalar.
+          Dejar en `false` (default) si el front no usa GitHub Packages — el
+          comportamiento queda idéntico al actual.
+        type: boolean
+        required: false
+        default: false
 
+# `packages: read` solo se ejerce cuando `github_packages: true`; declararlo
+# siempre no afecta a los fronts que no lo usan (el GITHUB_TOKEN simplemente
+# no se consume).
 permissions:
   contents: read
+  packages: read
 
 jobs:
   ci:
@@ -60,6 +75,20 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles(format('{0}/bun.lock', inputs.working_directory), format('{0}/bun.lockb', inputs.working_directory)) }}
           restore-keys: |
             bun-${{ runner.os }}-
+
+      - name: Auth GitHub Packages (scope @cosmos-sincoerp)
+        if: inputs.github_packages
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # `.npmrc` en el working_directory: mapea el scope del org a GitHub
+          # Packages y autentica con el GITHUB_TOKEN del workflow (read:packages).
+          {
+            echo '@cosmos-sincoerp:registry=https://npm.pkg.github.com'
+            echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}"
+          } > .npmrc
 
       - name: Install
         run: bun install --frozen-lockfile
