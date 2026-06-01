@@ -5,10 +5,11 @@ name: npm publish (reusable)
 # - Merge del PR "Version Packages"          -> publica el/los paquete(s) a npm.
 # El consumidor lo invoca desde un workflow `on: push: branches: [main]`.
 # Requiere el secret NPM_TOKEN (automation token del registro destino).
-
-concurrency:
-  group: release-${{ github.workflow }}
-  cancel-in-progress: false
+#
+# El control de concurrencia lo declara el workflow LLAMANTE, no este reusable:
+# si ambos comparten `concurrency.group` (p. ej. `release-${{ github.workflow }}`,
+# que en el reusable resuelve al nombre del caller), GitHub detecta un deadlock
+# entre el top-level workflow y el reusable y cancela el run.
 
 on:
   workflow_call:
