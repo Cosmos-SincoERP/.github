@@ -98,6 +98,15 @@ on:
         type: string
         required: false
         default: "."
+      github_packages:
+        description: |
+          Si el front consume paquetes privados del org desde GitHub Packages
+          (p. ej. `@cosmos-sincoerp/asistente`). Cuando es `true`, el job `build`
+          escribe un `.npmrc` autenticado con el GITHUB_TOKEN antes de instalar.
+          Default `false` — sin cambios para fronts que no usan GitHub Packages.
+        type: boolean
+        required: false
+        default: false
       runner_group:
         description: |
           Runner group de GitHub Actions donde correr el job `deploy`
@@ -109,9 +118,11 @@ on:
         required: true
 
 # La auth a Azure es por Managed Identity de la VM (no OIDC), así que no se
-# necesita `id-token: write`. Solo `contents: read` para `actions/checkout`.
+# necesita `id-token: write`. `contents: read` para `actions/checkout`;
+# `packages: read` solo se ejerce si `github_packages: true` (no afecta a quien no lo use).
 permissions:
   contents: read
+  packages: read
 
 jobs:
   build:
@@ -137,6 +148,18 @@ jobs:
           key: bun-${{ runner.os }}-${{ hashFiles(format('{0}/bun.lock', inputs.working_directory)) }}
           restore-keys: |
             bun-${{ runner.os }}-
+
+      - name: Auth GitHub Packages (scope @cosmos-sincoerp)
+        if: inputs.github_packages
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          {
+            echo '@cosmos-sincoerp:registry=https://npm.pkg.github.com'
+            echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}"
+          } > .npmrc
 
       - name: Install
         run: bun install --frozen-lockfile
