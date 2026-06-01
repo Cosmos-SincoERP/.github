@@ -1,4 +1,4 @@
-name: Tests Frontend (reusable)
+name: CI Front (reusable)
 
 concurrency:
   group: pr-${{ github.head_ref }}-${{ github.workflow }}
@@ -37,7 +37,7 @@ permissions:
   contents: read
 
 jobs:
-  tests:
+  ci:
     name: bun lint / test / build
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -81,7 +81,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## Tests Frontend (Bun)"
+            echo "## CI Front (Bun)"
             echo ""
             echo "| Etapa | Ejecutada |"
             echo "|---|---|"
