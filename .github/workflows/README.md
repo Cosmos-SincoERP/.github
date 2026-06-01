@@ -33,6 +33,7 @@ Mantener estos nombres estables es contrato público: cambiarlos rompe los Rules
 | `_reusable-deploy-swarm.yml` | `Deploy a Docker Swarm (reusable)` | Despliega un stack Compose a un Docker Swarm self-hosted inyectando tags por servicio. | `stack_file`, `stack_name`, `image_tag`, `image_tags_json`, `acr_name`, `stack_environment` |
 | `_reusable-docker-build-push.yml` | `Build & Push Docker (reusable)` | Build multi-imagen contra ACR con alias mutables derivados del contexto (PR / main / manual). | `images_json`, `acr_name`, `repository_prefix`, `ref_context_override`, `mutable_alias_override` |
 | `_reusable-nuget-publish.yml` | `NuGet publish (reusable)` | Empaqueta un `.csproj` y publica al feed NuGet configurado (default nuget.org). | `project_path`, `package_version`, `dotnet_version`, `nuget_source` + secret `NUGET_API_KEY` |
+| `_reusable-npm-publish.yml` | `Publicar a <registro> (reusable)` | Publica una librería npm (no versiona): `build` + `changeset publish` (idempotente). Soporta npm público (secret `NPM_TOKEN`) y GitHub Packages (con el `GITHUB_TOKEN` del workflow). | `working_directory`, `bun_version`, `npm_registry`, `publish_command` + secret opcional `NPM_TOKEN` |
 | `_reusable-secret-scan.yml` | `Secret Scan (gitleaks)` | Mitigación open-source de secret scanning (gitleaks) para repos privados sin GHAS (ADR 0002 E.6). | `config-path` |
 | `_reusable-tests-dotnet.yml` | `Tests .NET (reusable)` | Restore + build + test de soluciones .NET, con exclusión de proyectos opcional. | `solution_path`, `working_directory`, `dotnet_version`, `configuration`, `excluded_projects` |
 | `_reusable-ci-front.yml` | `CI Front (reusable)` | Lint + test + build de fronts SPA (Bun), cada step togglable. | `working_directory`, `bun_version`, `run_lint`, `run_test`, `run_build` |
@@ -194,6 +195,46 @@ Empaqueta un `.csproj` y publica el `.nupkg` resultante a un feed NuGet (por def
 - **Sin `runner_group`**: corre en `ubuntu-latest`. No toca la VM productiva ni el ACR.
 - **`secrets` declarado** explícitamente — `NUGET_API_KEY` es `required: true`.
 - **`--skip-duplicate`** evita fallar si alguien re-dispara un tag accidentalmente.
+
+### `_reusable-npm-publish.yml`
+
+Publica una **librería npm** del org. **No versiona**: el bump (`changeset version` o edición manual de `package.json`) se hace en el **PR del cambio**, no en este workflow. El reusable solo **publica** la versión vigente de `main` con `changeset publish`, que es **idempotente** (si la versión ya está en el registro, no hace nada). Corre en runner hosted (`ubuntu-latest`).
+
+Soporta dos registros vía el input `npm_registry`:
+
+- **npm público** (`https://registry.npmjs.org`, default): autentica con el secret **`NPM_TOKEN`** (requerido en este caso).
+- **GitHub Packages** (`https://npm.pkg.github.com`): autentica con el **`GITHUB_TOKEN`** del propio workflow — **no requiere `NPM_TOKEN`**. El scope del paquete debe ser el **nombre del org en minúsculas** (`@cosmos-sincoerp`) y el caller debe conceder `permissions: packages: write`.
+
+| Input | Tipo | Default | Descripción |
+|---|---|---|---|
+| `working_directory` | string | `.` | Directorio del `package.json`. |
+| `bun_version` | string | `latest` | Versión de Bun. |
+| `npm_registry` | string | `https://registry.npmjs.org` | Registro destino (npm público o `https://npm.pkg.github.com`). |
+| `publish_command` | string | `bun run release` | Comando que buildea y publica (`build` + `changeset publish`). |
+
+| Secret | Descripción |
+|---|---|
+| `NPM_TOKEN` | **Opcional.** Token de publish; requerido solo para registros que no sean GitHub Packages. Los callers pasan `secrets: inherit`. |
+
+**Notas de diseño:**
+
+- **No declara `concurrency`** — eso es responsabilidad del caller (compartir el `concurrency.group` entre caller y reusable provoca un deadlock que GitHub cancela).
+- **Sin acciones de terceros** (política `allowed_actions` del org): usa el CLI de changesets (devDependency) + `git`.
+- **No abre "Version Packages" PR**: el versionado vive en el PR del cambio (modelo "el reusable solo publica").
+
+**Patrón de consumo** (workflow `release.yml` del repo librería, publicando a GitHub Packages):
+
+```yaml
+on: { push: { branches: [main] } }
+permissions: { contents: read, packages: write }
+concurrency: { group: release-${{ github.workflow }}, cancel-in-progress: false }
+jobs:
+  release:
+    uses: Cosmos-SincoERP/.github/.github/workflows/_reusable-npm-publish.yml@v1
+    with:
+      npm_registry: https://npm.pkg.github.com
+    secrets: inherit
+```
 
 ### `_reusable-bump-and-tag.yml`
 
