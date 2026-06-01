@@ -1,21 +1,24 @@
 name: npm publish (reusable)
 
-# Publica una librería npm del org usando Changesets.
-# - Push a main con changesets pendientes  -> abre/actualiza el PR "Version Packages".
-# - Merge del PR "Version Packages"          -> publica el/los paquete(s) a npm.
-# El consumidor lo invoca desde un workflow `on: push: branches: [main]`.
-# Requiere el secret NPM_TOKEN (automation token del registro destino).
+# Publica una librería npm del org. NO versiona: el bump de versión (changeset
+# version / edición manual de package.json) se hace en el PR del cambio, no acá.
+# Este workflow solo PUBLICA la versión vigente de `main` con `changeset publish`,
+# que es idempotente (si la versión ya existe en el registro, no hace nada).
 #
-# El control de concurrencia lo declara el workflow LLAMANTE, no este reusable:
-# si ambos comparten `concurrency.group` (p. ej. `release-${{ github.workflow }}`,
-# que en el reusable resuelve al nombre del caller), GitHub detecta un deadlock
-# entre el top-level workflow y el reusable y cancela el run.
+# Registro destino (input `npm_registry`):
+#   - npm público:    https://registry.npmjs.org   -> auth con secret NPM_TOKEN
+#   - GitHub Packages: https://npm.pkg.github.com   -> auth con el GITHUB_TOKEN del
+#     workflow (no requiere NPM_TOKEN). El scope DEBE ser el nombre del org en
+#     minúsculas (@cosmos-sincoerp) y el caller debe conceder `permissions: packages: write`.
+#
+# El control de concurrencia lo declara el workflow LLAMANTE, no este reusable
+# (compartir `concurrency.group` entre caller y reusable provoca un deadlock).
 
 on:
   workflow_call:
     inputs:
       working_directory:
-        description: "Directorio del package.json / .changeset (relativo al checkout)."
+        description: "Directorio del package.json (relativo al checkout)."
         type: string
         required: false
         default: "."
@@ -25,32 +28,27 @@ on:
         required: false
         default: "latest"
       npm_registry:
-        description: "Registro npm destino. Default: npm público."
+        description: "Registro destino: https://registry.npmjs.org (npm público) o https://npm.pkg.github.com (GitHub Packages)."
         type: string
         required: false
         default: "https://registry.npmjs.org"
-      version_command:
-        description: "Comando que aplica los changesets (bump + CHANGELOG)."
-        type: string
-        required: false
-        default: "bun run version-packages"
       publish_command:
-        description: "Comando que buildea y publica (changeset publish)."
+        description: "Comando que buildea y publica (por defecto build + changeset publish)."
         type: string
         required: false
         default: "bun run release"
     secrets:
       NPM_TOKEN:
-        description: "Automation token con permiso de publish al registro."
-        required: true
+        description: "Token de publish. Requerido solo para registros que no sean GitHub Packages (npm público). Para GitHub Packages se usa el GITHUB_TOKEN del workflow."
+        required: false
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+  packages: write
 
 jobs:
-  release:
-    name: Changesets (version PR / publish)
+  publish:
+    name: Publicar a ${{ inputs.npm_registry }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -78,78 +76,40 @@ jobs:
       - name: Install
         run: bun install --frozen-lockfile
 
-      - name: Configurar auth de npm
+      - name: Configurar auth del registro
         shell: bash
         env:
           NPM_REGISTRY: ${{ inputs.npm_registry }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           host="${NPM_REGISTRY#http*://}"
           host="${host%/}"
-          printf '//%s/:_authToken=%s\n' "$host" "$NPM_TOKEN" > "$HOME/.npmrc"
-          printf 'registry=%s\n' "$NPM_REGISTRY" >> "$HOME/.npmrc"
+          # GitHub Packages: autentica con el GITHUB_TOKEN del workflow.
+          # Otros registros (npm público): requieren NPM_TOKEN.
+          if [ "$host" = "npm.pkg.github.com" ]; then
+            token="$GITHUB_TOKEN"
+          else
+            token="${NPM_TOKEN:-}"
+            if [ -z "$token" ]; then
+              echo "::error::El registro $NPM_REGISTRY requiere el secret NPM_TOKEN."
+              exit 1
+            fi
+          fi
+          {
+            printf '//%s/:_authToken=%s\n' "$host" "$token"
+            printf 'registry=%s\n' "$NPM_REGISTRY"
+          } > "$HOME/.npmrc"
 
-      # Réplica de changesets/action SIN acciones de terceros (la política del org
-      # solo admite acciones de GitHub, verified o Cosmos-SincoERP/*). Usa el CLI de
-      # changesets (devDependency) + git + gh (ambos provistos por GitHub).
-      #  - Hay changesets pendientes  -> bump en una rama y abre/actualiza el "Version Packages" PR.
-      #  - No hay changesets pendientes -> publica (build + changeset publish) y empuja los tags.
-      - name: Changesets (version PR o publish)
+      - name: Publicar (idempotente)
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          VERSION_COMMAND: ${{ inputs.version_command }}
           PUBLISH_COMMAND: ${{ inputs.publish_command }}
-          BASE_BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # ¿Hay changesets pendientes? (cualquier .changeset/*.md salvo el README)
-          pending=()
-          shopt -s nullglob
-          for f in .changeset/*.md; do
-            [ "$(basename "$f")" = "README.md" ] && continue
-            pending+=("$f")
-          done
-
-          if [ ${#pending[@]} -gt 0 ]; then
-            echo "::group::Version mode (${#pending[@]} changeset(s) pendientes)"
-            release_branch="changeset-release/${BASE_BRANCH}"
-            git checkout -B "$release_branch"
-
-            eval "$VERSION_COMMAND"   # bump de package.json + CHANGELOG + consume los changesets
-
-            if git diff --quiet; then
-              echo "version-packages no produjo cambios; nada que abrir."
-              echo "::endgroup::"
-              exit 0
-            fi
-
-            git add -A
-            git commit -m "chore(release): versionar paquetes"
-            git push -f origin "$release_branch"
-
-            if gh pr view "$release_branch" --json number >/dev/null 2>&1; then
-              echo "El PR \"Version Packages\" ya existe; el push lo actualizó."
-            else
-              gh pr create \
-                --base "$BASE_BRANCH" \
-                --head "$release_branch" \
-                --title "chore(release): versionar paquetes" \
-                --body $'PR generado automáticamente por el release.\n\nAplica los changesets pendientes: sube la versión en `package.json` y actualiza el `CHANGELOG.md`.\n\nAl mergear este PR se publica el paquete a npm.'
-            fi
-            echo "::endgroup::"
-          else
-            echo "::group::Publish mode (sin changesets pendientes)"
-            eval "$PUBLISH_COMMAND"   # build + changeset publish (crea tags locales)
-            git push origin --tags || true
-            echo "::endgroup::"
-          fi
+          # changeset publish solo sube versiones que aún no existen en el registro.
+          eval "$PUBLISH_COMMAND"
 
       - name: Resumen
         if: always()
@@ -159,10 +119,10 @@ jobs:
           REGISTRY: ${{ inputs.npm_registry }}
         run: |
           {
-            echo "## npm publish (Changesets)"
+            echo "## npm publish"
             echo ""
             echo "- Directorio: \`$WD\`"
             echo "- Registro: \`$REGISTRY\`"
-            echo "- Con changesets pendientes -> se abrió/actualizó el PR \"Version Packages\"."
-            echo "- Sin changesets -> se publicó la versión vigente."
+            echo "- Publica la versión vigente de \`main\` (idempotente con changeset publish)."
+            echo "- El bump de versión se hace en el PR del cambio, no en este workflow."
           } >> "$GITHUB_STEP_SUMMARY"
