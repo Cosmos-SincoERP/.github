@@ -35,7 +35,7 @@ Mantener estos nombres estables es contrato público: cambiarlos rompe los Rules
 | `_reusable-nuget-publish.yml` | `NuGet publish (reusable)` | Empaqueta un `.csproj` y publica al feed NuGet configurado (default nuget.org). | `project_path`, `package_version`, `dotnet_version`, `nuget_source` + secret `NUGET_API_KEY` |
 | `_reusable-secret-scan.yml` | `Secret Scan (gitleaks)` | Mitigación open-source de secret scanning (gitleaks) para repos privados sin GHAS (ADR 0002 E.6). | `config-path` |
 | `_reusable-tests-dotnet.yml` | `Tests .NET (reusable)` | Restore + build + test de soluciones .NET, con exclusión de proyectos opcional. | `solution_path`, `working_directory`, `dotnet_version`, `configuration`, `excluded_projects` |
-| `_reusable-tests-frontend.yml` | `Tests Frontend (reusable)` | Lint + test + build de frontends Bun (cada step togglable). | `working_directory`, `bun_version`, `run_lint`, `run_test`, `run_build` |
+| `_reusable-ci-front.yml` | `CI Front (reusable)` | Lint + test + build de fronts SPA (Bun), cada step togglable. | `working_directory`, `bun_version`, `run_lint`, `run_test`, `run_build` |
 
 > Ejemplo de Ruleset (en el repo consumidor): para hacer required el check de un PR que invoca `_reusable-dependency-review.yml`, el repo debe listar exactamente el string **`Dependency Review`** en `required_status_checks`. El mismo principio aplica para los otros nueve.
 
@@ -91,9 +91,9 @@ Build + test de una solución .NET en runner hosted.
 | `dotnet_version` | string | `10.0.x` | Versión del SDK. |
 | `configuration` | string | `Release` | `Debug` o `Release`. |
 
-### `_reusable-tests-frontend.yml`
+### `_reusable-ci-front.yml`
 
-Lint + test + build con Bun en runner hosted.
+Lint + test + build del front SPA con Bun en runner hosted (el CI completo del front).
 
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|
