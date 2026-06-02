@@ -88,6 +88,13 @@ repos:
     consumes: [reusables, dependabot]
     # Sin Dockerfile aún; añadir docker_directories cuando exista.
 
+  - name: Cosmos.Asistente.Infraestructura
+    stack: terraform
+    consumes: [reusables, dependabot]
+    overrides:
+      terraform_directory: /infra
+      # Sin Dockerfiles: solo IaC.
+
   - name: Cosmos.Front.Shell
     stack: node-bun
     consumes: [reusables, dependabot]
@@ -274,3 +281,9 @@ skip:
 
   - name: Observabilidad
     reason: "repo vacío (size=0, sin commits); sync no puede clonar. Reclasificar a repos: cuando tenga contenido y stack identificable"
+
+  - name: Cosmos.EstructuraOrganizacional
+    reason: "repo vacío (sin commits ni ramas); sync no puede clonar. Reclasificar a repos: cuando tenga contenido y stack identificable"
+
+  - name: Cosmos.EstructuraOrganizacional.Front
+    reason: "repo vacío (sin commits ni ramas); sync no puede clonar. Reclasificar a repos: cuando tenga contenido y stack identificable"
