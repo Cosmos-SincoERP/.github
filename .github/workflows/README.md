@@ -33,7 +33,7 @@ Mantener estos nombres estables es contrato público: cambiarlos rompe los Rules
 | `_reusable-deploy-swarm.yml` | `Deploy a Docker Swarm (reusable)` | Despliega un stack Compose a un Docker Swarm self-hosted inyectando tags por servicio. | `stack_file`, `stack_name`, `image_tag`, `image_tags_json`, `acr_name`, `stack_environment` |
 | `_reusable-docker-build-push.yml` | `Build & Push Docker (reusable)` | Build multi-imagen contra ACR con alias mutables derivados del contexto (PR / main / manual). | `images_json`, `acr_name`, `repository_prefix`, `ref_context_override`, `mutable_alias_override` |
 | `_reusable-nuget-publish.yml` | `NuGet publish (reusable)` | Empaqueta un `.csproj` y publica al feed NuGet configurado (default nuget.org). | `project_path`, `package_version`, `dotnet_version`, `nuget_source` + secret `NUGET_API_KEY` |
-| `_reusable-nuget-publish-batch.yml` | `NuGet publish batch (reusable)` | Versiona y publica **varios** paquetes NuGet en una sola corrida: SemVer + tag por paquete (secuencial) y `pack`/`push` en paralelo (matriz). Mismo `bump_type` para todos. | `packages_json`, `bump_type`, `dotnet_version`, `nuget_source`, `create_github_release` + secret `NUGET_API_KEY` |
+| `_reusable-nuget-publish-batch.yml` | `NuGet publish batch (reusable)` | **Estándar de release NuGet (lockstep):** publica todos los paquetes del catálogo con UNA versión (un tag `v<X>`), en paralelo. Sin anclas de dependencias internas. | `bump_type`, `version`, `tag_prefix`, `catalog_path`, `create_github_release` + secret `NUGET_API_KEY` |
 | `_reusable-npm-publish.yml` | `Publicar a <registro> (reusable)` | Publica una librería npm (no versiona): `build` + `changeset publish` (idempotente). Soporta npm público (secret `NPM_TOKEN`) y GitHub Packages (con el `GITHUB_TOKEN` del workflow). | `working_directory`, `bun_version`, `npm_registry`, `publish_command` + secret opcional `NPM_TOKEN` |
 | `_reusable-secret-scan.yml` | `Secret Scan (gitleaks)` | Mitigación open-source de secret scanning (gitleaks) para repos privados sin GHAS (ADR 0002 E.6). | `config-path` |
 | `_reusable-tests-dotnet.yml` | `Tests .NET (reusable)` | Restore + build + test de soluciones .NET, con exclusión de proyectos opcional. | `solution_path`, `working_directory`, `dotnet_version`, `configuration`, `excluded_projects` |
@@ -304,26 +304,30 @@ jobs:
 
 ### `_reusable-nuget-publish-batch.yml`
 
-Versiona y publica **varios paquetes NuGet en una sola corrida**, aplicando el mismo `bump_type` (`patch`/`minor`/`major`) a todos. Es la variante **batch** de `_reusable-nuget-publish.yml` (single-package): mismo verbo "publish", distinguido por el sufijo `-batch`. Resuelve el caso en que `_reusable-bump-and-tag.yml` + `_reusable-nuget-publish.yml` (single-package) obligaban a **despachar el flujo una vez por paquete**, y esas corridas se **encolaban** (mismo `concurrency.group` del caller). Es **aditivo**: aquellos dos reusables siguen válidos y sin cambios.
+**Estándar de release NuGet del org (versionado lockstep).** Publica **todos** los paquetes del repo con **una misma versión** por release (un solo tag `v<X>`), empaquetando en paralelo. Es la base para todos los repos de paquetes NuGet.
 
-Internamente reusa el mismo patrón resolver → matriz de `_reusable-docker-build-push.yml`:
+Por qué lockstep: como todos los paquetes comparten la versión `X`, las **dependencias internas** entre ellos se resuelven solas (todas apuntan a `X`) y el pack con `-p:Version=X` (propiedad global) es correcto. Así **no hay que mantener anclas** de versiones de dependencias internas (ej. el antiguo `Directory.Build.targets`). El costo es la "inflación" de versión (un paquete sin cambios igual sube), aceptable para familias de librerías cohesivas.
 
-- **Job `resolver`** (`ubuntu-latest`): por cada paquete consulta el feed, calcula la siguiente versión estable, valida que el tag no exista y crea los tags **localmente**; luego los empuja en un **push atómico** (`git push --atomic`). Secuencial a propósito: es de segundos (curl + `git tag`) y evita la carrera de empujar tags en paralelo. Emite `packages_json` enriquecido con `package_version` por paquete.
-- **Job `publish`** (matriz, `fail-fast: false`): `dotnet pack`/`push` de cada paquete **en paralelo** — donde está el ahorro de tiempo real. Que un paquete falle no aborta a los demás (`--skip-duplicate` hace idempotente el re-push de los que sí salieron).
+Internamente:
+
+- **Job `resolver`**: lee el catálogo del repo (`catalog_path`), calcula **una** versión (último tag `<tag_prefix>*` + `bump_type`, o `version` explícita en el primer release), crea/empuja el tag y, opcional, abre el GitHub Release. Idempotente: si el tag ya existe, entra en modo reintento.
+- **Job `publish`** (matriz, `fail-fast: false`): `dotnet pack <proj> -p:Version=X` + `dotnet nuget push --skip-duplicate` de cada proyecto **en paralelo**.
 
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|
-| `packages_json` | string (JSON) | **requerido** | Array de `{ package_id, tag_prefix, project_path }`. Normalmente lo arma el `resolver` del caller filtrando el catálogo por los paquetes seleccionados. |
-| `bump_type` | string | **requerido** | `patch`, `minor` o `major`. Se aplica **igual a todos** los paquetes. |
-| `dotnet_version` | string | `10.0.x` | SDK .NET para `setup-dotnet`. |
-| `nuget_source` | string | `https://api.nuget.org/v3/index.json` | Feed destino del `push`. |
-| `nuget_source_base` | string | `https://api.nuget.org/v3-flatcontainer` | Base para consultar versiones existentes. |
-| `initial_version` | string | `0.1.0` | Versión para un paquete que nunca fue publicado (404). |
-| `create_github_release` | boolean | `false` | Si es `true`, abre un GitHub Release por paquete con `--generate-notes`. |
+| `bump_type` | string | `minor` | `patch`/`minor`/`major`. Deriva la versión del último tag. Ignorado si se da `version`. |
+| `version` | string | `""` | Versión explícita `X.Y.Z`. **Obligatoria en el primer release** (aún no hay tag). |
+| `tag_prefix` | string | `v` | Prefijo del tag de versión del repo (`v` → `v1.2.3`). |
+| `catalog_path` | string | `.github/paquetes-nuget.yml` | Catálogo con `.paquetes[].project_path`. |
+| `nuget_source` | string | `https://api.nuget.org/v3/index.json` | Feed destino del push. |
+| `global_json` | string | `global.json` | `global.json` para `setup-dotnet`. |
+| `create_github_release` | boolean | `true` | Crea un GitHub Release del tag con notas autogeneradas. |
+| `release_ref` | string | `refs/heads/main` | Ref desde el cual se permite liberar. |
 
 | Output | Descripción |
 |---|---|
-| `packages_json` | El array de entrada enriquecido con `package_version`, `previous_version` y `new_tag` por paquete. |
+| `version` | Versión publicada (sin prefijo). |
+| `tag` | Tag creado (`tag_prefix` + versión). |
 
 | Secret | Descripción |
 |---|---|
@@ -331,24 +335,19 @@ Internamente reusa el mismo patrón resolver → matriz de `_reusable-docker-bui
 
 **Notas de diseño:**
 
-- **No declara `concurrency`** — lo hace el **caller** (misma razón que `_reusable-npm-publish.yml`: compartir el grupo entre caller y reusable provoca deadlock). El caller usa `cancel-in-progress: false` para no abortar un publish en curso.
-- **Permisos por job**: `resolver` necesita `contents: write` (empuja tags / abre Releases); `publish` corre con `contents: read`. El caller debe conceder `contents: write` (su token acota al del reusable).
-- **Reintentos**: el tag se crea **antes** del publish (igual que el single-package). Si un paquete falla en `publish`, su tag ya existe; un re-despacho con ese paquete **aborta** en el resolver. Para reintentar: borra el tag del paquete fallido y vuelve a despachar seleccionándolo (los que sí salieron son idempotentes vía `--skip-duplicate`).
-- **Tope ~9 paquetes** si se usa un checkbox por paquete en el caller (límite de 10 inputs de `workflow_dispatch`).
-- **Inflación de versión**: con "mismo `bump_type` para todos", marcar un paquete sin cambios igual le avanza la versión y publica un `.nupkg` redundante. La selección manual es deliberada para acotarlo.
+- **No declara `concurrency`** — lo hace el caller (compartir el grupo entre caller y reusable provoca deadlock; misma lección que `_reusable-npm-publish.yml`). El caller usa `cancel-in-progress: false`.
+- **Permisos por job**: `resolver` con `contents: write` (empuja tag / abre Release); `publish` con `contents: read`. El caller concede `contents: write`.
+- **Primer release**: como aún no hay tag `<tag_prefix>*`, hay que pasar `version` explícita (ej. `1.0.0`). Después se usa `bump_type` (deriva del último tag).
+- **Lockstep ≠ single-package**: este reusable versiona y publica TODO el repo junto. Para versionado independiente por paquete siguen disponibles `_reusable-bump-and-tag.yml` + `_reusable-nuget-publish.yml`.
 
-**Patrón de consumo** desde el repo aplicativo — catálogo como única fuente de verdad + un checkbox por paquete:
+**Patrón de consumo** desde el repo de paquetes — catálogo + caller mínimo. El reusable lee el catálogo, así que el caller no necesita un job `resolver`:
 
 ```yaml
-# .github/paquetes-nuget.yml
+# .github/paquetes-nuget.yml  (única fuente de verdad de QUÉ se publica)
 paquetes:
-  - nombre: contratos            # debe coincidir con el input boolean del caller
-    package_id: Foo.Contratos
-    tag_prefix: contratos-v
+  - package_id: Foo.Contratos
     project_path: src/Foo.Contratos/Foo.Contratos.csproj
-  - nombre: wolverine
-    package_id: Foo.Wolverine
-    tag_prefix: wolverine-v
+  - package_id: Foo.Wolverine
     project_path: src/Foo.Wolverine/Foo.Wolverine.csproj
 ```
 
@@ -359,12 +358,18 @@ on:
   workflow_dispatch:
     inputs:
       bump_type:
-        description: "Tipo de bump (aplica a todos los seleccionados)"
+        description: "Bump de la versión del repo (desde el último tag v*)"
         type: choice
         options: [patch, minor, major]
-        default: patch
-      contratos: { description: "Publicar contratos", type: boolean, default: false }
-      wolverine: { description: "Publicar wolverine", type: boolean, default: false }
+        default: minor
+      version:
+        description: "Versión explícita X.Y.Z (obligatoria en el primer release)"
+        type: string
+        default: ""
+      crear_github_release:
+        description: "Crear GitHub Release del tag"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -373,43 +378,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  resolver:
-    runs-on: ubuntu-latest
-    outputs:
-      packages_json: ${{ steps.sel.outputs.packages_json }}
-    steps:
-      - uses: actions/checkout@v6
-      - id: sel
-        shell: bash
-        env:
-          # Los booleans interpolan como true/false → JSON válido.
-          SELECTION_JSON: |
-            {
-              "contratos": ${{ inputs.contratos }},
-              "wolverine": ${{ inputs.wolverine }}
-            }
-        run: |
-          set -euo pipefail
-          selected=$(yq -o=json '.paquetes' .github/paquetes-nuget.yml | jq -c \
-            --argjson sel "$SELECTION_JSON" \
-            '[.[] | select($sel[.nombre] == true) | {package_id, tag_prefix, project_path}]')
-          if [[ "$(echo "$selected" | jq 'length')" -eq 0 ]]; then
-            echo "::error::No seleccionaste ningún paquete."
-            exit 1
-          fi
-          echo "packages_json=$selected" >> "$GITHUB_OUTPUT"
-
   release:
-    needs: resolver
     uses: Cosmos-SincoERP/.github/.github/workflows/_reusable-nuget-publish-batch.yml@v1
     with:
-      packages_json: ${{ needs.resolver.outputs.packages_json }}
       bump_type: ${{ inputs.bump_type }}
-      create_github_release: true
+      version: ${{ inputs.version }}
+      create_github_release: ${{ inputs.crear_github_release }}
     secrets: inherit
 ```
 
-> Al agregar un paquete: añade su entrada al catálogo **y** un `boolean` con el mismo `nombre` en el caller (consecuencia de elegir checkboxes). El resto del flujo no cambia.
+> Repo nuevo de paquetes: agrega `.github/paquetes-nuget.yml` (lista de `project_path`) + el caller de arriba, y declara el secret `NUGET_API_KEY`. El **primer release** se hace con `version` explícita (ej. `1.0.0`); luego `bump_type` deriva del último tag.
 
 ### `_reusable-cleanup-acr-pr.yml`
 
