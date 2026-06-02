@@ -33,6 +33,7 @@ Mantener estos nombres estables es contrato público: cambiarlos rompe los Rules
 | `_reusable-deploy-swarm.yml` | `Deploy a Docker Swarm (reusable)` | Despliega un stack Compose a un Docker Swarm self-hosted inyectando tags por servicio. | `stack_file`, `stack_name`, `image_tag`, `image_tags_json`, `acr_name`, `stack_environment` |
 | `_reusable-docker-build-push.yml` | `Build & Push Docker (reusable)` | Build multi-imagen contra ACR con alias mutables derivados del contexto (PR / main / manual). | `images_json`, `acr_name`, `repository_prefix`, `ref_context_override`, `mutable_alias_override` |
 | `_reusable-nuget-publish.yml` | `NuGet publish (reusable)` | Empaqueta un `.csproj` y publica al feed NuGet configurado (default nuget.org). | `project_path`, `package_version`, `dotnet_version`, `nuget_source` + secret `NUGET_API_KEY` |
+| `_reusable-nuget-publish-batch.yml` | `NuGet publish batch (reusable)` | Versiona y publica **varios** paquetes NuGet en una sola corrida: SemVer + tag por paquete (secuencial) y `pack`/`push` en paralelo (matriz). Mismo `bump_type` para todos. | `packages_json`, `bump_type`, `dotnet_version`, `nuget_source`, `create_github_release` + secret `NUGET_API_KEY` |
 | `_reusable-npm-publish.yml` | `Publicar a <registro> (reusable)` | Publica una librería npm (no versiona): `build` + `changeset publish` (idempotente). Soporta npm público (secret `NPM_TOKEN`) y GitHub Packages (con el `GITHUB_TOKEN` del workflow). | `working_directory`, `bun_version`, `npm_registry`, `publish_command` + secret opcional `NPM_TOKEN` |
 | `_reusable-secret-scan.yml` | `Secret Scan (gitleaks)` | Mitigación open-source de secret scanning (gitleaks) para repos privados sin GHAS (ADR 0002 E.6). | `config-path` |
 | `_reusable-tests-dotnet.yml` | `Tests .NET (reusable)` | Restore + build + test de soluciones .NET, con exclusión de proyectos opcional. | `solution_path`, `working_directory`, `dotnet_version`, `configuration`, `excluded_projects` |
@@ -300,6 +301,115 @@ jobs:
       package_version: ${{ needs.bump-and-tag.outputs.new_version }}
     secrets: inherit
 ```
+
+### `_reusable-nuget-publish-batch.yml`
+
+Versiona y publica **varios paquetes NuGet en una sola corrida**, aplicando el mismo `bump_type` (`patch`/`minor`/`major`) a todos. Es la variante **batch** de `_reusable-nuget-publish.yml` (single-package): mismo verbo "publish", distinguido por el sufijo `-batch`. Resuelve el caso en que `_reusable-bump-and-tag.yml` + `_reusable-nuget-publish.yml` (single-package) obligaban a **despachar el flujo una vez por paquete**, y esas corridas se **encolaban** (mismo `concurrency.group` del caller). Es **aditivo**: aquellos dos reusables siguen válidos y sin cambios.
+
+Internamente reusa el mismo patrón resolver → matriz de `_reusable-docker-build-push.yml`:
+
+- **Job `resolver`** (`ubuntu-latest`): por cada paquete consulta el feed, calcula la siguiente versión estable, valida que el tag no exista y crea los tags **localmente**; luego los empuja en un **push atómico** (`git push --atomic`). Secuencial a propósito: es de segundos (curl + `git tag`) y evita la carrera de empujar tags en paralelo. Emite `packages_json` enriquecido con `package_version` por paquete.
+- **Job `publish`** (matriz, `fail-fast: false`): `dotnet pack`/`push` de cada paquete **en paralelo** — donde está el ahorro de tiempo real. Que un paquete falle no aborta a los demás (`--skip-duplicate` hace idempotente el re-push de los que sí salieron).
+
+| Input | Tipo | Default | Descripción |
+|---|---|---|---|
+| `packages_json` | string (JSON) | **requerido** | Array de `{ package_id, tag_prefix, project_path }`. Normalmente lo arma el `resolver` del caller filtrando el catálogo por los paquetes seleccionados. |
+| `bump_type` | string | **requerido** | `patch`, `minor` o `major`. Se aplica **igual a todos** los paquetes. |
+| `dotnet_version` | string | `10.0.x` | SDK .NET para `setup-dotnet`. |
+| `nuget_source` | string | `https://api.nuget.org/v3/index.json` | Feed destino del `push`. |
+| `nuget_source_base` | string | `https://api.nuget.org/v3-flatcontainer` | Base para consultar versiones existentes. |
+| `initial_version` | string | `0.1.0` | Versión para un paquete que nunca fue publicado (404). |
+| `create_github_release` | boolean | `false` | Si es `true`, abre un GitHub Release por paquete con `--generate-notes`. |
+
+| Output | Descripción |
+|---|---|
+| `packages_json` | El array de entrada enriquecido con `package_version`, `previous_version` y `new_tag` por paquete. |
+
+| Secret | Descripción |
+|---|---|
+| `NUGET_API_KEY` | **Requerido.** API key con permiso de push al feed. Los callers pasan `secrets: inherit`. |
+
+**Notas de diseño:**
+
+- **No declara `concurrency`** — lo hace el **caller** (misma razón que `_reusable-npm-publish.yml`: compartir el grupo entre caller y reusable provoca deadlock). El caller usa `cancel-in-progress: false` para no abortar un publish en curso.
+- **Permisos por job**: `resolver` necesita `contents: write` (empuja tags / abre Releases); `publish` corre con `contents: read`. El caller debe conceder `contents: write` (su token acota al del reusable).
+- **Reintentos**: el tag se crea **antes** del publish (igual que el single-package). Si un paquete falla en `publish`, su tag ya existe; un re-despacho con ese paquete **aborta** en el resolver. Para reintentar: borra el tag del paquete fallido y vuelve a despachar seleccionándolo (los que sí salieron son idempotentes vía `--skip-duplicate`).
+- **Tope ~9 paquetes** si se usa un checkbox por paquete en el caller (límite de 10 inputs de `workflow_dispatch`).
+- **Inflación de versión**: con "mismo `bump_type` para todos", marcar un paquete sin cambios igual le avanza la versión y publica un `.nupkg` redundante. La selección manual es deliberada para acotarlo.
+
+**Patrón de consumo** desde el repo aplicativo — catálogo como única fuente de verdad + un checkbox por paquete:
+
+```yaml
+# .github/paquetes-nuget.yml
+paquetes:
+  - nombre: contratos            # debe coincidir con el input boolean del caller
+    package_id: Foo.Contratos
+    tag_prefix: contratos-v
+    project_path: src/Foo.Contratos/Foo.Contratos.csproj
+  - nombre: wolverine
+    package_id: Foo.Wolverine
+    tag_prefix: wolverine-v
+    project_path: src/Foo.Wolverine/Foo.Wolverine.csproj
+```
+
+```yaml
+# .github/workflows/release-nuget.yml
+name: Release NuGet
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: "Tipo de bump (aplica a todos los seleccionados)"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      contratos: { description: "Publicar contratos", type: boolean, default: false }
+      wolverine: { description: "Publicar wolverine", type: boolean, default: false }
+
+permissions:
+  contents: write
+concurrency:
+  group: release-nuget-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  resolver:
+    runs-on: ubuntu-latest
+    outputs:
+      packages_json: ${{ steps.sel.outputs.packages_json }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: sel
+        shell: bash
+        env:
+          # Los booleans interpolan como true/false → JSON válido.
+          SELECTION_JSON: |
+            {
+              "contratos": ${{ inputs.contratos }},
+              "wolverine": ${{ inputs.wolverine }}
+            }
+        run: |
+          set -euo pipefail
+          selected=$(yq -o=json '.paquetes' .github/paquetes-nuget.yml | jq -c \
+            --argjson sel "$SELECTION_JSON" \
+            '[.[] | select($sel[.nombre] == true) | {package_id, tag_prefix, project_path}]')
+          if [[ "$(echo "$selected" | jq 'length')" -eq 0 ]]; then
+            echo "::error::No seleccionaste ningún paquete."
+            exit 1
+          fi
+          echo "packages_json=$selected" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: resolver
+    uses: Cosmos-SincoERP/.github/.github/workflows/_reusable-nuget-publish-batch.yml@v1
+    with:
+      packages_json: ${{ needs.resolver.outputs.packages_json }}
+      bump_type: ${{ inputs.bump_type }}
+      create_github_release: true
+    secrets: inherit
+```
+
+> Al agregar un paquete: añade su entrada al catálogo **y** un `boolean` con el mismo `nombre` en el caller (consecuencia de elegir checkboxes). El resto del flujo no cambia.
 
 ### `_reusable-cleanup-acr-pr.yml`
 

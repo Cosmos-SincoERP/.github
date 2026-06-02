@@ -1,0 +1,296 @@
+name: NuGet publish batch (reusable)
+
+# Versiona y publica VARIOS paquetes NuGet en una sola corrida. Aplica el mismo
+# bump_type (patch|minor|major) a todos los paquetes recibidos en `packages_json`.
+#
+# Generaliza el flujo single-package (`_reusable-bump-and-tag.yml` +
+# `_reusable-nuget-publish.yml`), que ambos quedan intactos: este reusable es
+# aditivo. El job `resolver` calcula versiones y crea los tags de forma SECUENCIAL
+# (curl + git tag son segundos, y serializar evita la carrera de `git push` de
+# tags); el job `publish` hace `dotnet pack`/`push` en MATRIZ, en paralelo (que es
+# lo lento). Patrón resolver -> matriz tomado de `_reusable-docker-build-push.yml`.
+#
+# Sin `concurrency` a nivel de este reusable: el control lo declara el workflow
+# LLAMANTE (compartir `concurrency.group` entre caller y reusable provoca deadlock,
+# misma lección que `_reusable-npm-publish.yml`).
+
+on:
+  workflow_call:
+    inputs:
+      packages_json:
+        description: |
+          JSON array de paquetes a versionar y publicar. Cada elemento debe tener:
+          - package_id: ID del paquete en nuget.org. Ej: "Foo.Contratos".
+          - tag_prefix: Prefijo del tag git, sin la version. Ej: "contratos-v".
+          - project_path: Ruta al .csproj a empaquetar (relativa al checkout).
+        type: string
+        required: true
+      bump_type:
+        description: "Tipo de bump SemVer aplicado a TODOS: patch | minor | major"
+        type: string
+        required: true
+      dotnet_version:
+        description: "Versión del SDK .NET para el setup-dotnet."
+        type: string
+        required: false
+        default: "10.0.x"
+      nuget_source:
+        description: "Feed destino del push. Default nuget.org."
+        type: string
+        required: false
+        default: "https://api.nuget.org/v3/index.json"
+      nuget_source_base:
+        description: "Base del feed para consultar versiones (formato v3-flatcontainer). Default nuget.org."
+        type: string
+        required: false
+        default: "https://api.nuget.org/v3-flatcontainer"
+      initial_version:
+        description: "Version a usar para un paquete que nunca fue publicado (404 en el feed)."
+        type: string
+        required: false
+        default: "0.1.0"
+      create_github_release:
+        description: "Si es true, abre un GitHub Release por paquete con --generate-notes."
+        type: boolean
+        required: false
+        default: false
+    secrets:
+      NUGET_API_KEY:
+        description: "API key con permiso de push al feed."
+        required: true
+
+jobs:
+  resolver:
+    name: Calcular bumps y crear tags
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      packages_json: ${{ steps.bump.outputs.packages_json }}
+    steps:
+      - name: Validar inputs
+        shell: bash
+        env:
+          PACKAGES_JSON: ${{ inputs.packages_json }}
+          BUMP_TYPE: ${{ inputs.bump_type }}
+        run: |
+          set -euo pipefail
+          case "$BUMP_TYPE" in
+            patch|minor|major) ;;
+            *)
+              echo "::error::bump_type invalido: '$BUMP_TYPE'. Valores aceptados: patch, minor, major."
+              exit 1
+              ;;
+          esac
+          if ! echo "$PACKAGES_JSON" | jq -e 'type == "array"' >/dev/null 2>&1; then
+            echo "::error::packages_json no es un array JSON valido."
+            exit 1
+          fi
+          count=$(echo "$PACKAGES_JSON" | jq 'length')
+          if [[ "$count" -eq 0 ]]; then
+            echo "::error::packages_json esta vacio: no hay paquetes que publicar."
+            exit 1
+          fi
+          echo "Paquetes a versionar: $count"
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Calcular versiones y crear tags
+        id: bump
+        shell: bash
+        env:
+          PACKAGES_JSON: ${{ inputs.packages_json }}
+          BUMP_TYPE: ${{ inputs.bump_type }}
+          INITIAL_VERSION: ${{ inputs.initial_version }}
+          NUGET_BASE: ${{ inputs.nuget_source_base }}
+          CREATE_RELEASE: ${{ inputs.create_github_release }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          count=$(echo "$PACKAGES_JSON" | jq 'length')
+          out="[]"
+          tags=()
+
+          # --- Paso 1: calcular versiones, validar y crear tags LOCALES ---
+          for i in $(seq 0 $((count - 1))); do
+            entry=$(echo "$PACKAGES_JSON" | jq -c ".[$i]")
+            package_id=$(echo "$entry" | jq -r '.package_id')
+            tag_prefix=$(echo "$entry" | jq -r '.tag_prefix')
+
+            if [[ -z "$package_id" || "$package_id" == "null" || -z "$tag_prefix" || "$tag_prefix" == "null" ]]; then
+              echo "::error::Entrada invalida en packages_json[$i]: requiere package_id y tag_prefix. Recibido: $entry"
+              exit 1
+            fi
+
+            pkg_lower=$(echo "$package_id" | tr '[:upper:]' '[:lower:]')
+            url="${NUGET_BASE}/${pkg_lower}/index.json"
+
+            body=$(mktemp)
+            http_code=$(curl -sS -o "$body" -w '%{http_code}' "$url" || echo "000")
+
+            if [[ "$http_code" == "404" ]]; then
+              echo "[$package_id] No encontrado en el feed. Usando initial_version."
+              previous="none"
+              new="$INITIAL_VERSION"
+            elif [[ "$http_code" == "200" ]]; then
+              previous=$(jq -r '.versions[]' "$body" \
+                | grep -vE '-' \
+                | sort -V \
+                | tail -n 1 || true)
+              if [[ -z "$previous" ]]; then
+                echo "[$package_id] Existe pero sin versiones estables. Usando initial_version."
+                previous="none"
+                new="$INITIAL_VERSION"
+              else
+                IFS='.' read -r major minor patch <<< "$previous"
+                case "$BUMP_TYPE" in
+                  patch) patch=$((patch + 1)) ;;
+                  minor) minor=$((minor + 1)); patch=0 ;;
+                  major) major=$((major + 1)); minor=0; patch=0 ;;
+                esac
+                new="${major}.${minor}.${patch}"
+              fi
+            else
+              echo "::error::Respuesta inesperada del feed (HTTP $http_code) al consultar ${url}"
+              cat "$body" >&2 || true
+              exit 1
+            fi
+
+            tag="${tag_prefix}${new}"
+            if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+              echo "::error::El tag '${tag}' ya existe en el repo. Posible race condition, version manual fuera de banda, o reintento de un publish fallido (borra el tag para reintentar)."
+              exit 1
+            fi
+
+            git tag -a "$tag" -m "Release ${package_id} ${tag} (previa: ${previous})"
+            tags+=("$tag")
+
+            out=$(echo "$out" | jq -c \
+              --argjson e "$entry" \
+              --arg v "$new" \
+              --arg p "$previous" \
+              --arg t "$tag" \
+              '. + [$e + {package_version: $v, previous_version: $p, new_tag: $t}]')
+
+            echo "[$package_id] previa=${previous} bump=${BUMP_TYPE} nueva=${new} tag=${tag}"
+          done
+
+          # --- Paso 2: empujar TODOS los tags en un push atomico ---
+          # Si la creacion de algun tag fallo arriba, ya abortamos sin empujar nada.
+          git push --atomic origin "${tags[@]}"
+
+          # --- Paso 3: GitHub Releases opcionales (tras empujar los tags) ---
+          if [[ "$CREATE_RELEASE" == "true" ]]; then
+            for tag in "${tags[@]}"; do
+              gh release create "$tag" \
+                --title "$tag" \
+                --generate-notes \
+                --verify-tag
+            done
+          fi
+
+          {
+            echo "packages_json<<EOF"
+            echo "$out" | jq -c .
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resumen del versionado
+        if: always()
+        shell: bash
+        env:
+          PACKAGES_OUT: ${{ steps.bump.outputs.packages_json }}
+          BUMP_TYPE: ${{ inputs.bump_type }}
+        run: |
+          {
+            echo "## NuGet publish batch — versionado"
+            echo ""
+            echo "- Bump aplicado: \`${BUMP_TYPE}\`"
+            echo ""
+            if [[ -n "${PACKAGES_OUT:-}" ]]; then
+              echo "| Paquete | Previa | Nueva | Tag |"
+              echo "|---|---|---|---|"
+              echo "$PACKAGES_OUT" | jq -r \
+                '.[] | "| \(.package_id) | \(.previous_version) | \(.package_version) | \(.new_tag) |"'
+            else
+              echo "_El resolver no produjo resultados (revisar logs del job)._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Pack & push ${{ matrix.pkg.package_id }}
+    needs: resolver
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: ${{ fromJSON(needs.resolver.outputs.packages_json) }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Pack
+        shell: bash
+        env:
+          PROJECT: ${{ matrix.pkg.project_path }}
+          VERSION: ${{ matrix.pkg.package_version }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f "$PROJECT" ]]; then
+            echo "::error::Proyecto no encontrado: $PROJECT"
+            exit 1
+          fi
+          dotnet pack "$PROJECT" \
+            -c Release \
+            -p:PackageVersion="$VERSION" \
+            -o ./nupkgs
+
+      - name: Push
+        shell: bash
+        env:
+          NUGET_SOURCE: ${{ inputs.nuget_source }}
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(./nupkgs/*.nupkg)
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "::error::No se generaron .nupkg en ./nupkgs"
+            exit 1
+          fi
+          for pkg in "${files[@]}"; do
+            echo "  Push: $pkg"
+            dotnet nuget push "$pkg" \
+              --api-key "$NUGET_API_KEY" \
+              --source "$NUGET_SOURCE" \
+              --skip-duplicate
+          done
+
+      - name: Resumen
+        if: always()
+        shell: bash
+        env:
+          PACKAGE_ID: ${{ matrix.pkg.package_id }}
+          PROJECT: ${{ matrix.pkg.project_path }}
+          VERSION: ${{ matrix.pkg.package_version }}
+          SOURCE: ${{ inputs.nuget_source }}
+        run: |
+          {
+            echo "### \`$PACKAGE_ID\` → \`$VERSION\`"
+            echo ""
+            echo "- Proyecto: \`$PROJECT\`"
+            echo "- Feed: \`$SOURCE\`"
+          } >> "$GITHUB_STEP_SUMMARY"
