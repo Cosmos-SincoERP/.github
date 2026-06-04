@@ -145,10 +145,7 @@ repos:
     overrides:
       docker_directories:
         - /Cosmos.Impuestos.Comandos.API
-        - /Cosmos.Impuestos.Comandos.Grpc
         - /Cosmos.Impuestos.Consultas.API
-        - /Cosmos.Impuestos.Consultas.Grpc
-        - /Cosmos.Impuestos.Seed
 
   - name: Cosmos.Impuestos.Gateway
     stack: github-actions
