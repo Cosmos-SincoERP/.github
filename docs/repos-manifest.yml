@@ -22,16 +22,6 @@
 repos:
 
   # creado por create-repo (baseline)
-  - name: Cosmos.Terceros.Notificaciones
-    stack: github-actions
-    consumes: [reusables, dependabot]
-
-  # creado por create-repo (baseline)
-  - name: Cosmos.Terceros.Orquestador
-    stack: github-actions
-    consumes: [reusables, dependabot]
-
-  # creado por create-repo (baseline)
   - name: Cosmos.Infraestructura.Dev
     stack: github-actions
     consumes: [reusables, dependabot]
@@ -248,6 +238,20 @@ repos:
       docker_directories:
         - /Cosmos.Terceros.Comandos.API
         - /Cosmos.Terceros.Consultas.API
+
+  - name: Cosmos.Terceros.Orquestador
+    stack: dotnet
+    consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /Cosmos.Terceros.Orquestador.Comandos.API
+
+  - name: Cosmos.Terceros.Notificaciones
+    stack: dotnet
+    consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /Cosmos.Terceros.Notificaciones.Server
 
   # ── Repos placeholder / docs / templates ────────────────────────
   # Solo necesitan baseline (security-checks vía reusables + dependabot
