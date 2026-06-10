@@ -38,8 +38,10 @@ Mantener estos nombres estables es contrato público: cambiarlos rompe los Rules
 | `_reusable-secret-scan.yml` | `Secret Scan (gitleaks)` | Mitigación open-source de secret scanning (gitleaks) para repos privados sin GHAS (ADR 0002 E.6). | `config-path` |
 | `_reusable-tests-dotnet.yml` | `Tests .NET (reusable)` | Restore + build + test de soluciones .NET, con exclusión de proyectos opcional. | `solution_path`, `working_directory`, `dotnet_version`, `configuration`, `excluded_projects` |
 | `_reusable-ci-front.yml` | `CI Front (reusable)` | Lint + test + build de fronts SPA (Bun), cada step togglable. | `working_directory`, `bun_version`, `run_lint`, `run_test`, `run_build`, `github_packages` |
+| `_reusable-terraform-plan.yml` | `Terraform plan (reusable)` | Ciclo `terraform plan` de los `*.Infraestructura`: job `validate` sin secretos (corre en todo PR, incl. Dependabot) + job `plan` autenticado (OIDC) que comenta el resultado en el PR. | `bounded_context`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `comment_on_pr` + `secrets: inherit` |
+| `_reusable-terraform-apply.yml` | `Terraform apply (reusable)` | `terraform apply` en `push` a main de los `*.Infraestructura` (OIDC + backend); `concurrency` no cancelable. | `bounded_context`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `apply_lock_timeout` + `secrets: inherit` |
 
-> Ejemplo de Ruleset (en el repo consumidor): para hacer required el check de un PR que invoca `_reusable-dependency-review.yml`, el repo debe listar exactamente el string **`Dependency Review`** en `required_status_checks`. El mismo principio aplica para los otros nueve.
+> Ejemplo de Ruleset (en el repo consumidor): para hacer required el check de un PR que invoca `_reusable-dependency-review.yml`, el repo debe listar exactamente el string **`Dependency Review`** en `required_status_checks`. El mismo principio aplica para los demás reusables.
 
 ---
 
@@ -405,6 +407,47 @@ Borra tags `pr-*` del ACR. Dos modos:
 | `keep_sha7` | string | `""` | Sólo en modo dirigido. Preserva `pr-{N}` y `pr-{N}-{keep_sha7}`; borra el resto. Para cleanup intra-PR. |
 | `min_age_days` | number | `7` | Solo en modo barrido. |
 | `dry_run` | boolean | `false` | Lista sin borrar. |
+
+### `_reusable-terraform-plan.yml`
+
+Ciclo `terraform plan` de los repos `*.Infraestructura`. Dos jobs: **`validate`**
+(`fmt -check` + `init -backend=false` + `validate`, **sin secretos ni Azure**, corre
+en todo PR incluido Dependabot) y **`plan`** (OIDC + backend azurerm + comentario en
+el PR, se saltea para PRs de Dependabot con `if: github.actor != 'dependabot[bot]'`).
+El backend se deriva del `bounded_context` (`rg-tfstate-<bc>-eus2-001` /
+`sttfstate<bc>eus2001` / `<bc>-dev.tfstate`). Los TF_VAR_* comunes se leen de `vars`/
+`secrets` del caller (que pasa `secrets: inherit`); los `front_<bc>_*` llegan en
+`extra_tf_vars_json`.
+
+| Input | Tipo | Default | Descripción |
+|---|---|---|---|
+| `bounded_context` | string | **requerido** | BC corto (`cont`/`asis`/`impu`/`oxp`). Deriva el backend. |
+| `tf_version` | string | `1.9.8` | Versión de Terraform. |
+| `working_directory` | string | `infra` | Directorio de los `.tf`. |
+| `extra_tf_vars_json` | string (JSON) | `{}` | `{ "<tf_var>": "<valor>" }` **no sensible** (front vars). Se exporta como `TF_VAR_<key>`. |
+| `plan_lock_timeout` | string | `5m` | `-lock-timeout` del plan. |
+| `comment_on_pr` | boolean | `true` | Publica/actualiza el comentario del plan en el PR. |
+| `comment_max_chars` | number | `60000` | Trunca el comentario por encima de este largo. |
+| `backend_resource_group` / `_storage_account` / `_container` / `_key` | string | (deriva del BC) | Overrides del backend. |
+
+Secrets (vía `secrets: inherit` del caller): `VM_ADMIN_PASSWORD`, `GH_RUNNER_PAT` y —solo OXP— `SINCOERP_PASSWORD`.
+
+### `_reusable-terraform-apply.yml`
+
+`terraform apply` en `push` a main (post-merge) de los `*.Infraestructura`. Un job
+autenticado (OIDC + backend): `init` → `validate` → `plan` → `apply -auto-approve`.
+`concurrency: infra-apply-<bc>` con `cancel-in-progress: false` (nunca aborta un apply en curso).
+
+| Input | Tipo | Default | Descripción |
+|---|---|---|---|
+| `bounded_context` | string | **requerido** | BC corto. Deriva el backend. |
+| `tf_version` | string | `1.9.8` | Versión de Terraform. |
+| `working_directory` | string | `infra` | Directorio de los `.tf`. |
+| `extra_tf_vars_json` | string (JSON) | `{}` | Igual que en plan (front vars). |
+| `apply_lock_timeout` | string | `10m` | `-lock-timeout` de plan y apply. |
+| `backend_resource_group` / `_storage_account` / `_container` / `_key` | string | (deriva del BC) | Overrides del backend. |
+
+Secrets (vía `secrets: inherit` del caller): mismos que `_reusable-terraform-plan.yml`.
 
 ---
 
