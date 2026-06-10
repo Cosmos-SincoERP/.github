@@ -16,7 +16,7 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 .
 ├── .github/
 │   ├── workflows/
-│   │   ├── _reusable-*.yml          # 10 reusables migrados desde Cosmos.PlatformWorkflows
+│   │   ├── _reusable-*.yml          # 14 reusables CI/CD compartidos (los originales migrados desde Cosmos.PlatformWorkflows)
 │   │   ├── create-repo.yml          # Crea repos gobernados (baseline de seguridad)
 │   │   ├── sync-governance.yml      # Propaga cambios a repos consumidores
 │   │   ├── drift-check-governance.yml  # Reporta drift semanalmente
