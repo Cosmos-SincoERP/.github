@@ -1,0 +1,181 @@
+name: Terraform apply (reusable)
+
+# Encapsula el `terraform apply` de los repos *.Infraestructura del plane, para
+# correr en `push` a main (post-merge). Un solo job autenticado (OIDC + backend
+# azurerm): init → validate → plan → apply -auto-approve. El backend se deriva del
+# `bounded_context` por convención CAF (con overrides). Los TF_VAR_* comunes se
+# leen de `vars`/`secrets` del CALLER (resuelven al repo que llama); los por-BC
+# (front_*) llegan en `extra_tf_vars_json`. `concurrency` no cancelable: nunca se
+# aborta un apply en curso.
+
+on:
+  workflow_call:
+    inputs:
+      bounded_context:
+        description: "Bounded context corto (cont|asis|impu|oxp). Deriva el backend y etiqueta el resumen."
+        type: string
+        required: true
+      tf_version:
+        description: "Versión de Terraform para setup-terraform."
+        type: string
+        required: false
+        default: "1.9.8"
+      working_directory:
+        description: "Directorio de los archivos .tf."
+        type: string
+        required: false
+        default: "infra"
+      extra_tf_vars_json:
+        description: |
+          JSON object {"<tf_var>": "<valor>"} con TF_VARs adicionales NO sensibles
+          (típicamente las `front_<bc>_*`). Cada entrada no vacía se exporta como
+          TF_VAR_<key>. NUNCA poner secretos acá: los inputs no se enmascaran en logs.
+        type: string
+        required: false
+        default: "{}"
+      apply_lock_timeout:
+        description: "Valor de -lock-timeout para `terraform plan` y `apply`."
+        type: string
+        required: false
+        default: "10m"
+      backend_resource_group:
+        description: "Override del Resource Group del backend. Vacío → rg-tfstate-<bc>-eus2-001."
+        type: string
+        required: false
+        default: ""
+      backend_storage_account:
+        description: "Override del Storage Account del backend. Vacío → sttfstate<bc>eus2001."
+        type: string
+        required: false
+        default: ""
+      backend_container:
+        description: "Container del backend del state."
+        type: string
+        required: false
+        default: "tfstate"
+      backend_key:
+        description: "Override del key del state. Vacío → <bc>-dev.tfstate."
+        type: string
+        required: false
+        default: ""
+    secrets:
+      VM_ADMIN_PASSWORD:
+        description: "Contraseña del admin de la VM (→ TF_VAR_vm_admin_password)."
+        required: false
+      GH_RUNNER_PAT:
+        description: "PAT del runner self-hosted (→ TF_VAR_github_runner_pat)."
+        required: false
+      SINCOERP_PASSWORD:
+        description: "Solo OXP: password SincoERP (→ TF_VAR_sincoerp_password). Vacío y omitido en los demás BCs."
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: infra-apply-${{ inputs.bounded_context }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: terraform apply
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    env:
+      ARM_USE_OIDC: 'true'
+      ARM_USE_AZUREAD: 'true'
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolver backend y exportar TF_VARs
+        shell: bash
+        env:
+          BC: ${{ inputs.bounded_context }}
+          BACKEND_RG: ${{ inputs.backend_resource_group }}
+          BACKEND_SA: ${{ inputs.backend_storage_account }}
+          BACKEND_KEY_OVERRIDE: ${{ inputs.backend_key }}
+          EXTRA_TF_VARS_JSON: ${{ inputs.extra_tf_vars_json }}
+          V_OWNER: ${{ vars.OWNER }}
+          V_COST_CENTER: ${{ vars.COST_CENTER }}
+          V_SSH_IPS: ${{ vars.SSH_ALLOWED_SOURCE_IPS }}
+          V_VM_USER: ${{ vars.VM_ADMIN_USERNAME }}
+          V_PG_USER: ${{ vars.POSTGRES_ADMIN_USERNAME }}
+          S_VM_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
+          S_RUNNER_PAT: ${{ secrets.GH_RUNNER_PAT }}
+          S_SINCOERP: ${{ secrets.SINCOERP_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          {
+            echo "BACKEND_RESOURCE_GROUP=${BACKEND_RG:-rg-tfstate-${BC}-eus2-001}"
+            echo "BACKEND_STORAGE_ACCOUNT=${BACKEND_SA:-sttfstate${BC}eus2001}"
+            echo "BACKEND_KEY=${BACKEND_KEY_OVERRIDE:-${BC}-dev.tfstate}"
+          } >> "$GITHUB_ENV"
+
+          emit() { [ -n "${2:-}" ] && printf 'TF_VAR_%s=%s\n' "$1" "$2" >> "$GITHUB_ENV" || true; }
+          emit owner                   "${V_OWNER:-}"
+          emit cost_center             "${V_COST_CENTER:-}"
+          emit ssh_allowed_source_ips  "${V_SSH_IPS:-}"
+          emit vm_admin_username       "${V_VM_USER:-}"
+          emit postgres_admin_username "${V_PG_USER:-}"
+          emit vm_admin_password       "${S_VM_PASS:-}"
+          emit github_runner_pat       "${S_RUNNER_PAT:-}"
+          emit sincoerp_password       "${S_SINCOERP:-}"
+
+          echo "$EXTRA_TF_VARS_JSON" \
+            | jq -r 'to_entries[] | select(.value != "" and .value != null) | "TF_VAR_\(.key)=\(.value)"' \
+            >> "$GITHUB_ENV"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform ${{ inputs.tf_version }}
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ inputs.tf_version }}
+          terraform_wrapper: false
+
+      - name: terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="use_oidc=true" \
+            -backend-config="use_azuread_auth=true" \
+            -backend-config="resource_group_name=${BACKEND_RESOURCE_GROUP}" \
+            -backend-config="storage_account_name=${BACKEND_STORAGE_ACCOUNT}" \
+            -backend-config="container_name=${{ inputs.backend_container }}" \
+            -backend-config="key=${BACKEND_KEY}"
+
+      - name: terraform validate
+        run: terraform validate -no-color
+
+      - name: terraform plan
+        run: terraform plan -no-color -input=false -lock-timeout=${{ inputs.apply_lock_timeout }} -out=tfplan
+
+      - name: terraform apply
+        run: terraform apply -no-color -input=false -auto-approve -lock-timeout=${{ inputs.apply_lock_timeout }} tfplan
+
+      - name: Resumen del apply
+        if: always()
+        shell: bash
+        env:
+          BC: ${{ inputs.bounded_context }}
+        run: |
+          {
+            echo "## infra-apply (${BC})"
+            echo ""
+            echo "- commit: \`${{ github.sha }}\`"
+            echo "- status: \`${{ job.status }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
