@@ -11,6 +11,10 @@ concurrency:
 #     plane en un único Storage Account compartido (`stfrontappldeveus2001`).
 #   - env.js (config runtime) generado desde KV y subido a $web/<app_name>/env.js
 #     con no-cache.
+#   - Archivos de contrato (opcional, input `app_base_files`): copia server-side
+#     de los archivos del bundle que otra app descubre por URL fija sin SHA (ej.
+#     intenciones.json / remoteEntry.js del asistente) a $web/<app_name>/<archivo>
+#     con no-cache. Sin el input → no-op.
 #   - Activación atómica: copia server-side de <app_name>/releases/<sha>/index.html
 #     a $web/<app_name>/index.html (los usuarios ven la nueva versión en la
 #     siguiente request, sin estado intermedio).
@@ -107,6 +111,22 @@ on:
         type: boolean
         required: false
         default: false
+      app_base_files:
+        description: |
+          Lista separada por espacios de archivos del bundle que, además de su
+          copia inmutable bajo `releases/<sha>/`, deben publicarse en la **raíz
+          estable del front** (`$web/<app_name>/<archivo>`) con `Cache-Control:
+          no-cache`. Para **archivos de contrato de descubrimiento** que otra app
+          consume por una URL fija y sin SHA — p. ej. el asistente transversal lee
+          `<app_base>/intenciones.json` y carga `<app_base>/remoteEntry.js`
+          (Module Federation) desde el registro del gateway; el consumidor externo
+          no conoce el SHA, así que estos archivos no pueden vivir solo bajo
+          `releases/<sha>/`. Default vacío → no-op (los fronts que no exponen
+          contratos no cambian). Cada archivo se resuelve relativo a la raíz del
+          bundle (`dist/`); no se permite ruta absoluta ni `..`.
+        type: string
+        required: false
+        default: ""
       runner_group:
         description: |
           Runner group de GitHub Actions donde correr el job `deploy`
@@ -363,6 +383,102 @@ jobs:
             --content-type "application/javascript; charset=utf-8" \
             --overwrite true \
             --no-progress
+
+      - name: Publicar archivos de contrato en el app-base (no-cache)
+        # Algunos archivos del bundle son **contrato de descubrimiento**: otra app
+        # los consume por una URL fija y SIN versión (ej. el asistente transversal
+        # lee `<app_base>/intenciones.json` y carga `<app_base>/remoteEntry.js` de
+        # Module Federation desde el registro del gateway). No pueden vivir solo
+        # bajo `releases/<sha>/` porque el consumidor externo no conoce el SHA. Los
+        # publicamos en la raíz del front (`$web/<app_name>/<archivo>`) con
+        # `no-cache` — mismo tratamiento que `env.js`. El bundle versionado
+        # conserva su copia inmutable; esta es la copia estable y mutable. Step
+        # idéntico en mecánica al swap de index.html (copy server-side + poll +
+        # update de content-settings), iterado sobre la lista.
+        if: inputs.app_base_files != ''
+        shell: bash
+        env:
+          STORAGE: ${{ inputs.storage_account_name }}
+          APP: ${{ inputs.app_name }}
+          SHA: ${{ github.sha }}
+          APP_BASE_FILES: ${{ inputs.app_base_files }}
+        run: |
+          set -euo pipefail
+
+          # `'$web'` con comillas simples es el nombre literal del contenedor de
+          # static website (Azure usa `$`). Aplica a todos los `az storage blob`.
+
+          for f in $APP_BASE_FILES; do
+            # Guard: el contrato es un archivo del bundle (ruta relativa dentro
+            # del release). Rechazar ruta absoluta o `..` (escape del prefijo).
+            case "$f" in
+              /*|*..*)
+                echo "::error::app_base_files: '$f' inválido (no se permite ruta absoluta ni '..')."
+                exit 1 ;;
+            esac
+
+            # Content-Type por extensión: `az storage blob update` REEMPLAZA todo
+            # el content-settings, así que hay que re-setear el tipo junto con el
+            # cache-control (mismo motivo que el swap de index.html). Extensión
+            # desconocida → octet-stream (el consumidor decide).
+            case "$f" in
+              *.json)     ct="application/json; charset=utf-8" ;;
+              *.js|*.mjs) ct="application/javascript; charset=utf-8" ;;
+              *.css)      ct="text/css; charset=utf-8" ;;
+              *.html)     ct="text/html; charset=utf-8" ;;
+              *.wasm)     ct="application/wasm" ;;
+              *)          ct="application/octet-stream" ;;
+            esac
+
+            echo "Publicando contrato '$f' → \$web/$APP/$f (Content-Type: $ct)"
+
+            # Copy server-side desde el release inmutable a la raíz del front.
+            # Sobrescribe la copia anterior (cada deploy la refresca). Si el
+            # archivo no existe en el release, `copy start` falla → el job falla
+            # (fail-fast: un contrato declarado que falta es un error real).
+            # shellcheck disable=SC2016
+            az storage blob copy start \
+              --account-name "$STORAGE" \
+              --auth-mode login \
+              --source-container '$web' \
+              --source-blob "$APP/releases/$SHA/$f" \
+              --destination-container '$web' \
+              --destination-blob "$APP/$f" \
+              --output none
+
+            # Poll de la copia (async; el `update` siguiente fallaría si aún está
+            # pending). Tope 30s — archivos de contrato chicos.
+            status=""
+            for _ in $(seq 1 30); do
+              # shellcheck disable=SC2016
+              status=$(az storage blob show \
+                --account-name "$STORAGE" --auth-mode login \
+                --container-name '$web' --name "$APP/$f" \
+                --query 'properties.copy.status' -o tsv)
+              case "$status" in
+                success) break ;;
+                pending) sleep 1 ;;
+                *) echo "::error::Copia de '$f' en estado inesperado: $status"; exit 1 ;;
+              esac
+            done
+            if [[ "$status" != "success" ]]; then
+              echo "::error::La copia de '$f' no completó en 30s (último estado: $status)."
+              exit 1
+            fi
+
+            # `az storage blob copy` preserva las propiedades de origen (acá
+            # Cache-Control: immutable). Lo sobrescribimos a no-cache para que el
+            # consumidor externo siempre revalide y vea el último deploy.
+            # shellcheck disable=SC2016
+            az storage blob update \
+              --account-name "$STORAGE" \
+              --auth-mode login \
+              --container-name '$web' \
+              --name "$APP/$f" \
+              --content-cache-control "no-cache" \
+              --content-type "$ct" \
+              --output none
+          done
 
       - name: Activación atómica — swap de index.html
         shell: bash

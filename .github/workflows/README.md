@@ -29,7 +29,7 @@ Mantener estos nombres estables es contrato público: cambiarlos rompe los Rules
 | `_reusable-bump-and-tag.yml` | `Bump SemVer + tag (reusable)` | Calcula siguiente SemVer consultando nuget.org, crea y empuja tag git, opcionalmente abre GitHub Release. | `package_id`, `tag_prefix`, `bump_type`, `initial_version`, `create_github_release` |
 | `_reusable-cleanup-acr-pr.yml` | `Cleanup ACR — tags de PR (reusable)` | Borra tags `pr-*` huérfanos en ACR (modo dirigido por PR cerrado, o barrido por edad). | `acr_name`, `repository_prefix`, `repositories_json`, `pr_number`, `keep_sha7` |
 | `_reusable-dependency-review.yml` | `Dependency Review` | Bloquea PRs que introducen dependencias vulnerables o con licencias prohibidas (ADR 0002 E.4). | `fail-on-severity`, `deny-licenses` |
-| `_reusable-deploy-front.yml` | `Deploy Front estático (reusable)` | Despliega SPA Bun a Storage Account `$web` con activación atómica y env.js generado desde Key Vault. | `app_name`, `web_endpoint`, `storage_account`, `key_vault_name`, `environment`, `github_packages` |
+| `_reusable-deploy-front.yml` | `Deploy Front estático (reusable)` | Despliega SPA Bun a Storage Account `$web` con activación atómica y env.js generado desde Key Vault. | `app_name`, `web_endpoint`, `storage_account`, `key_vault_name`, `environment`, `github_packages`, `app_base_files` |
 | `_reusable-deploy-swarm.yml` | `Deploy a Docker Swarm (reusable)` | Despliega un stack Compose a un Docker Swarm self-hosted inyectando tags por servicio. | `stack_file`, `stack_name`, `image_tag`, `image_tags_json`, `acr_name`, `stack_environment` |
 | `_reusable-docker-build-push.yml` | `Build & Push Docker (reusable)` | Build multi-imagen contra ACR con alias mutables derivados del contexto (PR / main / manual). | `images_json`, `acr_name`, `repository_prefix`, `ref_context_override`, `mutable_alias_override` |
 | `_reusable-nuget-publish.yml` | `NuGet publish (reusable)` | Empaqueta un `.csproj` y publica al feed NuGet configurado (default nuget.org). | `project_path`, `package_version`, `dotnet_version`, `nuget_source` + secret `NUGET_API_KEY` |
@@ -155,6 +155,8 @@ Despliega un stack a Docker Swarm.
 
 Build + test + deploy de un SPA al Storage Account static website. Sigue el patrón **build once, deploy anywhere**: bundle inmutable bajo `$web/<app_name>/releases/<sha>/`, `env.js` runtime en `$web/<app_name>/env.js` con `Cache-Control: no-cache`, swap atómico del `<app_name>/index.html`. El prefijo `<app_name>/` permite hospedar todos los fronts del plane en un único Storage Account compartido (`stfrontappldeveus2001`). Corre en runner self-hosted (`[self-hosted, azure, swarm-deploy]`) y autentica con `az login --identity` reutilizando la Managed Identity de la VM — el mismo patrón que `_reusable-deploy-swarm.yml`. **Sin OIDC, sin GH Actions secrets de Azure.**
 
+**Archivos de contrato en el app-base (`app_base_files`).** El bundle se sirve versionado bajo `releases/<sha>/`, pero algunos archivos son **contrato de descubrimiento**: otra app los consume por una URL fija y **sin SHA**, así que no pueden vivir solo bajo el path versionado. El caso de hoy es el **asistente transversal**, que desde el registro de su gateway lee `<app_base>/intenciones.json` y carga `<app_base>/remoteEntry.js` (Module Federation) de cada módulo del ERP. Listándolos en `app_base_files` el reusable los copia (server-side, mismo patrón que el swap de `index.html`) a la raíz del front con `Cache-Control: no-cache` y el `Content-Type` derivado por extensión, manteniendo además la copia inmutable del release. Default vacío → no-op para fronts sin contratos.
+
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|
 | `app_name` | string | **requerido** | Identificador corto (2-8 chars). Se usa para derivar el nombre de los secrets en KV (`front-<app>-...`). |
@@ -165,6 +167,7 @@ Build + test + deploy de un SPA al Storage Account static website. Sigue el patr
 | `bun_version` | string | `latest` | Versión de Bun a instalar. |
 | `working_directory` | string | `.` | Directorio donde está `package.json` (y, debajo de él, `.deploy/env.js.tmpl`). |
 | `github_packages` | boolean | `false` | Si el front consume paquetes del org desde GitHub Packages. En `true`, el job `build` escribe un `.npmrc` autenticado con el `GITHUB_TOKEN` antes de `bun install` (el reusable declara `packages: read`). En `false`, sin cambios. |
+| `app_base_files` | string | `""` | Lista separada por espacios de archivos del bundle a publicar también en la **raíz estable del front** (`$web/<app_name>/<archivo>`) con `no-cache`, además de su copia inmutable bajo `releases/<sha>/`. Para **archivos de contrato de descubrimiento** que otra app consume por URL fija sin SHA (ej. `intenciones.json` + `remoteEntry.js` del asistente transversal). Vacío → no-op. Rutas relativas a `dist/`; sin ruta absoluta ni `..`. |
 
 **Plantilla del `env.js`: propiedad de cada front**, en `<working_directory>/.deploy/env.js.tmpl` del repo del front. El reusable es **agnóstico al shape** del template: extrae los placeholders `${VAR_NAME}` con grep, deriva el nombre del secret en KV por convención y resuelve con `envsubst`.
 
