@@ -1,0 +1,180 @@
+name: Release reusables (tag)
+
+# Aplica el tag de versión de los reusables tras el merge, según la etiqueta del PR:
+#   release:move  → mueve el major actual vN (cambio no-breaking).
+#   release:major → crea el siguiente major v(N+1) (cambio breaking); vN no se mueve.
+# Si el PR no tocó ningún reusable, no-op.
+#
+# Usa la App `cosmos-governance-sync` (no el GITHUB_TOKEN por defecto): cuando se
+# active el Tag ruleset sobre v* (ADR 0003 §B.11), la App es el actor de bypass
+# natural y el GITHUB_TOKEN quedaría bloqueado. Patrón idéntico a sync-governance.yml.
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'move = avanzar vN existente | major = crear v(N+1)'
+        type: choice
+        options: [move, major]
+        required: true
+      target_sha:
+        description: 'Commit a taggear (vacío = HEAD de la rama)'
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-reusables
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag reusables
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.merged == true
+    steps:
+      - name: Generate App token
+        id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.GOVERNANCE_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GOVERNANCE_SYNC_APP_PRIVATE_KEY }}
+          owner: Cosmos-SincoERP
+
+      - uses: actions/checkout@v6
+        with:
+          # base.ref (= main) tras el merge ya contiene el merge_commit_sha;
+          # fetch-depth 0 trae todos los tags para calcular el major mayor.
+          ref: ${{ github.event.pull_request.base.ref || github.ref_name }}
+          fetch-depth: 0
+          token: ${{ steps.token.outputs.token }}
+
+      - name: Resolver decisión y SHA
+        id: decide
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          DISPATCH_ACTION: ${{ github.event.inputs.action }}
+          DISPATCH_SHA: ${{ github.event.inputs.target_sha }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            action="$DISPATCH_ACTION"
+            sha="${DISPATCH_SHA:-$(git rev-parse HEAD)}"
+          else
+            # Guard 1: ¿este PR tocó reusables? Si no, no-op.
+            changed="$(gh pr diff "$PR_NUMBER" --repo "$REPO" --name-only)"
+            if ! echo "$changed" | grep -qE '^\.github/workflows/_reusable-.*\.ya?ml$'; then
+              echo "::notice::PR sin cambios en reusables. No-op."
+              echo "action=none" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # Guard 2: derivar acción de la etiqueta.
+            labels="$(echo "$LABELS_JSON" | jq -r '.[]')"
+            move=$(echo "$labels"  | grep -cx 'release:move'  || true)
+            major=$(echo "$labels" | grep -cx 'release:major' || true)
+            if   [[ "$move" -eq 1 && "$major" -eq 0 ]]; then action="move"
+            elif [[ "$major" -eq 1 && "$move" -eq 0 ]]; then action="major"
+            else
+              echo "::error::Etiquetas de release inconsistentes (move=${move} major=${major}). El gate del PR debió impedir esto."
+              exit 1
+            fi
+            sha="$MERGE_SHA"
+          fi
+
+          [[ -n "$sha" ]] || { echo "::error::SHA objetivo vacío."; exit 1; }
+          # Verifica que el objeto existe en el checkout antes de taggear.
+          git cat-file -e "${sha}^{commit}" 2>/dev/null || {
+            echo "::error::El commit ${sha} no está presente en el checkout."; exit 1; }
+
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha"        >> "$GITHUB_OUTPUT"
+          echo "Acción: ${action}  |  SHA: ${sha}"
+
+      - name: Calcular major mayor existente
+        id: major
+        if: steps.decide.outputs.action != 'none'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Solo tags con formato exactamente vN (un entero). Excluye tags estilo
+          # NuGet (foo-v1.2.3) y SemVer (v1.2.3). sort -n evita que v10 < v9.
+          highest="$(git tag -l 'v*' \
+            | grep -E '^v[0-9]+$' \
+            | sed 's/^v//' \
+            | sort -n \
+            | tail -n1 || true)"
+          current="${highest:-0}"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "Major mayor existente: v${current}"
+
+      - name: Aplicar tag
+        id: apply
+        if: steps.decide.outputs.action != 'none'
+        shell: bash
+        env:
+          ACTION: ${{ steps.decide.outputs.action }}
+          SHA: ${{ steps.decide.outputs.sha }}
+          CURRENT: ${{ steps.major.outputs.current }}
+        run: |
+          set -euo pipefail
+          git config user.name  "cosmos-governance-sync[bot]"
+          git config user.email "cosmos-governance-sync[bot]@users.noreply.github.com"
+
+          short="${SHA:0:7}"
+
+          if [[ "$ACTION" == "major" ]]; then
+            next=$(( CURRENT + 1 ))
+            tag="v${next}"
+            if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+              echo "::error::El tag '${tag}' ya existe. Posible doble-merge o race; revisar manualmente."
+              exit 1
+            fi
+            git tag -a "$tag" -m "Reusables ${tag} (breaking) @ ${short}" "$SHA"
+            git push origin "refs/tags/${tag}"
+            result="creado ${tag} → ${short}"
+          else  # move
+            if [[ "$CURRENT" -eq 0 ]]; then
+              echo "::error::No existe ningún vN para mover. Usa workflow_dispatch con action=major para el bootstrap."
+              exit 1
+            fi
+            tag="v${CURRENT}"
+            git tag -f -a "$tag" -m "Reusables ${tag} (non-breaking) @ ${short}" "$SHA"
+            git push -f origin "refs/tags/${tag}"
+            result="movido ${tag} → ${short}"
+          fi
+
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          echo "$result"
+
+      - name: Resumen
+        if: always()
+        shell: bash
+        env:
+          ACTION: ${{ steps.decide.outputs.action }}
+          RESULT: ${{ steps.apply.outputs.result }}
+        run: |
+          {
+            echo "## Release reusables"
+            echo ""
+            if [[ "${ACTION:-none}" == "none" ]]; then
+              echo "- Resultado: no-op (PR sin cambios en reusables)"
+            else
+              echo "- Acción: \`${ACTION}\`"
+              echo "- ${RESULT:-sin resultado}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

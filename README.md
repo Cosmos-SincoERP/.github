@@ -20,7 +20,9 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 │   │   ├── create-repo.yml          # Crea repos gobernados (baseline de seguridad)
 │   │   ├── sync-governance.yml      # Propaga cambios a repos consumidores
 │   │   ├── drift-check-governance.yml  # Reporta drift semanalmente
-│   │   └── README.md                # Doc de los reusables (catálogo + uso)
+│   │   ├── release-label-check.yml  # Gate requerido: exige etiqueta de release en PRs que tocan reusables
+│   │   ├── release-reusables.yml    # Tagger: mueve/crea el major (vN/v(N+1)) al mergear, según la etiqueta
+│   │   └── README.md                # Doc de los reusables (catálogo + uso + versionado)
 │   └── scripts/
 │       ├── create-repo.sh           # Lógica de la creación de repos
 │       ├── sync-governance.sh       # Lógica del sync
@@ -45,6 +47,7 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 │   │   ├── dependabot-github-actions.yml
 │   │   └── security-checks.yml
 │   └── repos-manifest.yml            # Inventario de repos consumidores (sync target)
+├── CLAUDE.md                         # Guía para agentes (etiquetado de release al crear PRs)
 └── README.md                         # Este archivo
 ```
 
@@ -56,7 +59,7 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 
 ## Para usar los reusables, ver
 
-- [`.github/workflows/README.md`](.github/workflows/README.md) — catálogo de los 10 reusables, sus inputs, sus checks expuestos, y patrón de consumo.
+- [`.github/workflows/README.md`](.github/workflows/README.md) — catálogo de los 14 reusables, sus inputs, sus checks expuestos, patrón de consumo y **versionado** (etiquetas `release:move` / `release:major`).
 
 ## Para entender el sync
 
