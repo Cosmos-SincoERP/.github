@@ -14,7 +14,37 @@ jobs:
       # ver inputs específicos en la sección "Reusables disponibles" más abajo
 ```
 
-El tag `@v1` es mutable: avanza con cada release no-breaking. Breaking changes publican un nuevo major (`@v2`, `@v3`) y se documentan en [`CHANGELOG.md`](../../CHANGELOG.md).
+El tag `@v1` es mutable: avanza con cada release no-breaking. Breaking changes publican un nuevo major (`@v2`, `@v3`). La promoción del tag está **automatizada a partir de una decisión explícita por PR** (ver [Versionado de los reusables](#versionado-de-los-reusables) abajo): no se mueve a mano.
+
+---
+
+## Versionado de los reusables
+
+Los 14 reusables se versionan **como un solo conjunto** con un único **major móvil**
+(`v1`, `v2`, …). La promoción del tag se decide **por PR mediante una etiqueta** y se
+aplica **automáticamente al mergear** — no hay que mover tags a mano.
+
+| Etiqueta del PR | Cuándo | Efecto al mergear |
+| --- | --- | --- |
+| `release:move` | Cambio **no-breaking** (fix, mejora interna, input nuevo opcional) | **Mueve `vN`** al merge commit. Lo reciben **todos** los consumidores `@vN` en su próximo run. |
+| `release:major` | Cambio **breaking** (renombrar un check name, cambiar/eliminar un input, cualquier cambio de contrato) | **Crea `v(N+1)`**; `vN` no se mueve. Los consumidores siguen en `vN` hasta migrar deliberadamente. |
+| _(ninguna)_ | El PR no toca ningún `_reusable-*.yml` | No-op. |
+
+Dos workflows internos implementan esto:
+
+- **`release-label-check.yml`** — check **requerido** `Release label check`. Si el PR toca
+  un reusable, exige exactamente una de las dos etiquetas; si falta (o hay dos), deja el PR
+  en rojo y bloquea el merge. Así el olvido de promover el tag es imposible.
+- **`release-reusables.yml`** — el tagger. Corre al cerrar el PR (`merged == true`), lee la
+  etiqueta y mueve/crea el tag con la App `cosmos-governance-sync`. Tiene un
+  `workflow_dispatch` (`action: move|major`, `target_sha`) como escotilla de
+  recuperación/bootstrap.
+
+> ⚠️ `release:move` mueve `vN` para **todos** los consumidores de inmediato. Ante la duda
+> sobre si un cambio es breaking, usa `release:major`.
+>
+> Crear `v(N+1)` **no** migra a los consumidores: el `@ref` vive en cada repo consumidor y en
+> `docs/templates/security-checks.yml`. Migrar a `@v(N+1)` es un paso deliberado aparte.
 
 ---
 
@@ -22,7 +52,7 @@ El tag `@v1` es mutable: avanza con cada release no-breaking. Breaking changes p
 
 Cada reusable expone un **nombre de check** estable —declarado en su clave `name:` de nivel raíz— que es el identificador exacto que GitHub muestra en la UI de PRs y, sobre todo, el string que los repos consumidores deben usar al marcar checks como **required** en sus Rulesets de branch protection (ADR [`0002`](../../docs/adr/0002-politicas-repositorios-desarrollo.md), decisiones **B.4** y **D.1**).
 
-Mantener estos nombres estables es contrato público: cambiarlos rompe los Rulesets aguas abajo y debe tratarse como breaking change con bump de major (`@v1` → `@v2`) más anuncio en [`CHANGELOG.md`](../../CHANGELOG.md).
+Mantener estos nombres estables es contrato público: cambiarlos rompe los Rulesets aguas abajo y debe tratarse como breaking change con bump de major (`@v1` → `@v2`), etiquetando el PR con `release:major` (ver [Versionado de los reusables](#versionado-de-los-reusables)).
 
 | Workflow file | Check name | Propósito | Inputs principales |
 | --- | --- | --- | --- |
