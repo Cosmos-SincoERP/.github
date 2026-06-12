@@ -1,0 +1,91 @@
+name: Release label check
+
+# Gate requerido: si un PR toca un reusable (.github/workflows/_reusable-*.yml),
+# exige EXACTAMENTE una etiqueta de release para que la decisión de versión sea
+# explícita antes del merge. El tagger (release-reusables.yml) la aplica al cerrar.
+#
+# - release:move  → cambio no-breaking → mueve el major actual vN al merge commit.
+# - release:major → cambio breaking    → crea el siguiente major v(N+1).
+#
+# IMPORTANTE: este workflow NO usa `on.pull_request.paths`. Un check requerido que
+# se salta por filtro de paths queda "expected/pending" y bloquea el merge para
+# siempre. El job corre siempre y decide adentro a partir del diff del PR.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: release-label-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  enforce-release-label:
+    # ── NOMBRE DE CHECK ESTABLE — este string se registra como required check en el
+    #    ruleset del repo. Renombrarlo rompe el gate en silencio. ──
+    name: Release label check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Decidir y validar etiqueta de release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+
+          # 1) ¿El PR toca algún reusable? gh resuelve el diff vía API (sin checkout).
+          changed="$(gh pr diff "$PR_NUMBER" --repo "$REPO" --name-only)"
+          echo "Archivos cambiados:"; echo "$changed" | sed 's/^/  /'
+
+          if ! echo "$changed" | grep -qE '^\.github/workflows/_reusable-.*\.ya?ml$'; then
+            echo "::notice::Ningún reusable cambió. No se requiere etiqueta de release."
+            {
+              echo "## Release label check"
+              echo ""
+              echo "- Reusables tocados: **no**"
+              echo "- Resultado: ✅ sin etiqueta requerida"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # 2) Toca reusables → exigir EXACTAMENTE una etiqueta de release.
+          labels="$(echo "$LABELS_JSON" | jq -r '.[]')"
+          move=$(echo "$labels"  | grep -cx 'release:move'  || true)
+          major=$(echo "$labels" | grep -cx 'release:major' || true)
+          count=$((move + major))
+
+          if [[ "$count" -eq 1 ]]; then
+            if [[ "$move" -eq 1 ]]; then
+              decision="release:move (mueve el major actual vN)"
+            else
+              decision="release:major (crea el siguiente major v(N+1))"
+            fi
+            echo "::notice::Decisión de versión: $decision"
+            {
+              echo "## Release label check"
+              echo ""
+              echo "- Reusables tocados: **sí**"
+              echo "- Decisión: **$decision**"
+              echo "- Resultado: ✅"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # 0 o ≥2 etiquetas → fallar (rojo, bloquea merge).
+          echo "::error::Este PR cambia uno o más reusables y requiere EXACTAMENTE una etiqueta de release: 'release:move' (no-breaking → mueve vN) o 'release:major' (breaking → crea v(N+1)). Encontradas: ${count}."
+          {
+            echo "## Release label check"
+            echo ""
+            echo "- Reusables tocados: **sí**"
+            echo "- Etiquetas de release encontradas: **${count}** (se requiere exactamente 1)"
+            echo "- Resultado: ❌ — añade \`release:move\` o \`release:major\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
