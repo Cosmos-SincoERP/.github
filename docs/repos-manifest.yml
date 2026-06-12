@@ -239,20 +239,6 @@ repos:
         - /Cosmos.Terceros.Comandos.API
         - /Cosmos.Terceros.Consultas.API
 
-  - name: Cosmos.Terceros.Orquestador
-    stack: dotnet
-    consumes: [reusables, dependabot]
-    overrides:
-      docker_directories:
-        - /Cosmos.Terceros.Orquestador.Comandos.API
-
-  - name: Cosmos.Terceros.Notificaciones
-    stack: dotnet
-    consumes: [reusables, dependabot]
-    overrides:
-      docker_directories:
-        - /Cosmos.Terceros.Notificaciones.Server
-
   # ── Repos placeholder / docs / templates ────────────────────────
   # Solo necesitan baseline (security-checks vía reusables + dependabot
   # github-actions). Sin código de aplicación aún, o solo docs/diagrams.
