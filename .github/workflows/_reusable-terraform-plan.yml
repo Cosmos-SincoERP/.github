@@ -81,7 +81,10 @@ on:
         description: "PAT del runner self-hosted (→ TF_VAR_github_runner_pat)."
         required: false
       SINCOERP_PASSWORD:
-        description: "Solo OXP: password SincoERP (→ TF_VAR_sincoerp_password). Vacío y omitido en los demás BCs."
+        description: "Password de integración SincoERP (→ TF_VAR_sincoerp_password). Usado por OXP y cont; vacío y omitido en los BCs que no integran con SincoERP."
+        required: false
+      FLAGSMITH_API_KEY:
+        description: "API key de Flagsmith (→ TF_VAR_flagsmith_api_key). Usado por cont; vacío y omitido en los BCs que no usan Flagsmith."
         required: false
 
 permissions:
@@ -160,6 +163,7 @@ jobs:
           S_VM_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
           S_RUNNER_PAT: ${{ secrets.GH_RUNNER_PAT }}
           S_SINCOERP: ${{ secrets.SINCOERP_PASSWORD }}
+          S_FLAGSMITH: ${{ secrets.FLAGSMITH_API_KEY }}
         run: |
           set -euo pipefail
 
@@ -182,6 +186,7 @@ jobs:
           emit vm_admin_password       "${S_VM_PASS:-}"
           emit github_runner_pat       "${S_RUNNER_PAT:-}"
           emit sincoerp_password       "${S_SINCOERP:-}"
+          emit flagsmith_api_key       "${S_FLAGSMITH:-}"
 
           # TF_VARs por-BC no sensibles (front_*) desde el JSON del caller.
           echo "$EXTRA_TF_VARS_JSON" \
