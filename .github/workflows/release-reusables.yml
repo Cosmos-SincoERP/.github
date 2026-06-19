@@ -49,7 +49,7 @@ jobs:
           private-key: ${{ secrets.GOVERNANCE_SYNC_APP_PRIVATE_KEY }}
           owner: Cosmos-SincoERP
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # base.ref (= main) tras el merge ya contiene el merge_commit_sha;
           # fetch-depth 0 trae todos los tags para calcular el major mayor.
