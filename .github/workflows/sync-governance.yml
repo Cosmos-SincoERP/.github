@@ -46,7 +46,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Genera un token efímero (~1h) scoped a todos los repos de la org
       # donde está instalada la App cosmos-governance-sync.

@@ -63,7 +63,7 @@ jobs:
       new_version: ${{ steps.calculate.outputs.new_version }}
       new_tag: ${{ steps.calculate.outputs.new_tag }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

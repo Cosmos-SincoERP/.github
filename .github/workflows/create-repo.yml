@@ -48,7 +48,7 @@ jobs:
           private-key: ${{ secrets.REPO_CREATOR_APP_PRIVATE_KEY }}
           owner: Cosmos-SincoERP
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           token: ${{ steps.token.outputs.token }}
 
