@@ -22,6 +22,16 @@
 repos:
 
   # creado por create-repo (baseline)
+  - name: Cosmos.Componentes.Front
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  # creado por create-repo (baseline)
+  - name: Cosmos.ControlPlane
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  # creado por create-repo (baseline)
   - name: Cosmos.Terceros.Gateway
     stack: github-actions
     consumes: [reusables, dependabot]
