@@ -22,6 +22,11 @@
 repos:
 
   # creado por create-repo (baseline)
+  - name: ObligacionesPorPagar.TenantOnboarding
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  # creado por create-repo (baseline)
   - name: Cosmos.Contabilidad.TenantOnboarding
     stack: github-actions
     consumes: [reusables, dependabot]
