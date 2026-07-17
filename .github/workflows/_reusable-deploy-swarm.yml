@@ -283,6 +283,10 @@ jobs:
           EXTRA_ENV: ${{ inputs.env_vars_json }}
         run: |
           set -euo pipefail
+          # Marca de tiempo (epoch) para que el paso "Verificar convergencia"
+          # distinga el update de ESTE deploy de un UpdateStatus viejo de un
+          # deploy anterior (evita falsos positivos por estado rezagado).
+          echo "DEPLOY_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
           if [[ "$EXTRA_ENV" != "{}" && -n "$EXTRA_ENV" ]]; then
             while IFS='=' read -r k v; do
               [[ -z "$k" ]] && continue
@@ -295,6 +299,131 @@ jobs:
             --resolve-image always \
             -c "$STACK_FILE" \
             "$STACK_NAME"
+
+      - name: Verificar convergencia del despliegue
+        shell: bash
+        env:
+          STACK_FILE: ${{ inputs.stack_file }}
+          STACK_NAME: ${{ inputs.stack_name }}
+          # Ventana total de espera (compartida entre servicios: el bucle evalúa
+          # todos en cada tick, así el wall-clock no crece con el nº de servicios).
+          # Un rollback de Swarm se detecta mucho antes; el timeout solo cubre
+          # updates que quedan colgados (pull lento, arranque con migraciones…).
+          TIMEOUT_SECONDS: "300"
+          POLL_INTERVAL: "8"
+        # `docker stack deploy` retorna apenas Swarm ACEPTA el spec, no cuando el
+        # contenedor nuevo queda sano. Sin esto, un update que falla y Swarm
+        # revierte (`failure_action: rollback`) o pausa se reporta como deploy
+        # exitoso y la imagen vieja sigue viva en silencio. Aquí esperamos la
+        # convergencia real y, si no converge, FALLAMOS el job volcando el porqué.
+        run: |
+          set -uo pipefail   # sin -e: los fallos se manejan y se vuelca diagnóstico
+          deploy_start="${DEPLOY_START_EPOCH:-0}"
+
+          mapfile -t SERVICES < <(yq '.services | keys | .[]' "$STACK_FILE")
+          if [[ ${#SERVICES[@]} -eq 0 ]]; then
+            echo "::error::No se pudieron leer servicios de $STACK_FILE"
+            exit 1
+          fi
+
+          # Vuelca el porqué de un servicio que no convergió: error de la tarea
+          # (columna Error de `service ps`) + logs del contenedor (la excepción real).
+          dump() {
+            local full="$1"
+            {
+              echo ""
+              echo "### ❌ \`$full\` no convergió"
+              echo ""
+              echo "**Tareas — \`docker service ps --no-trunc\`:**"
+              echo '```'
+              docker service ps "$full" --no-trunc \
+                --format 'table {{.Name}}\t{{.Image}}\t{{.Node}}\t{{.DesiredState}}\t{{.CurrentState}}\t{{.Error}}' 2>&1 | head -40
+              echo '```'
+              echo ""
+              echo "**Logs — \`docker service logs --tail 120\`:**"
+              echo '```'
+              docker service logs "$full" --tail 120 --no-trunc --timestamps 2>&1 | tail -120
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "----- service ps: $full -----"
+            docker service ps "$full" --no-trunc 2>&1 | head -40
+            echo "----- service logs: $full -----"
+            docker service logs "$full" --tail 120 --no-trunc 2>&1 | tail -120
+          }
+
+          # Deja en VERDICT (ok|fail|pending) + V_STATE/V_REPS el estado actual del
+          # servicio. NO se llama en $() para poder fijar esas variables globales.
+          evaluate() {
+            local full="$1" raw state started_epoch recent reps running desired
+            raw=$(docker service inspect "$full" \
+              --format '{{if .UpdateStatus}}{{.UpdateStatus.State}}|{{if .UpdateStatus.StartedAt}}{{.UpdateStatus.StartedAt.Unix}}{{end}}{{end}}' 2>/dev/null || echo "")
+            state="${raw%%|*}"
+            started_epoch="${raw#*|}"
+            [[ "$raw" != *"|"* ]] && started_epoch=""
+            [[ "$started_epoch" =~ ^-?[0-9]+$ ]] || started_epoch=0
+            recent="false"; (( started_epoch >= deploy_start )) && recent="true"
+            # Réplicas del servicio EXACTO (evita match por prefijo del --filter).
+            reps=$(docker service ls --filter "name=${full}" --format '{{.Name}}|{{.Replicas}}' 2>/dev/null \
+              | awk -F'|' -v n="$full" '$1==n{print $2; exit}')
+            running="${reps%%/*}"; desired="${reps##*/}"
+            V_STATE="$state"; V_REPS="$reps"
+
+            # Rollback/pausa disparado por ESTE deploy → la imagen nueva no quedó sana.
+            if [[ "$recent" == "true" && ( "$state" == "rollback_completed" || "$state" == "rollback_paused" || "$state" == "paused" ) ]]; then
+              VERDICT="fail"; return
+            fi
+            # Convergido: réplicas al día y (update completado, sin update, o el
+            # update no es de este deploy → no lo juzgamos por un estado viejo).
+            if [[ -n "$reps" && "$running" == "$desired" && ( "$recent" != "true" || "$state" == "completed" ) ]]; then
+              VERDICT="ok"; return
+            fi
+            VERDICT="pending"
+          }
+
+          declare -A RESULT
+          for svc in "${SERVICES[@]}"; do RESULT["$svc"]="pending"; done
+          pending=${#SERVICES[@]}
+          deadline=$(( SECONDS + TIMEOUT_SECONDS ))
+
+          while (( SECONDS < deadline && pending > 0 )); do
+            for svc in "${SERVICES[@]}"; do
+              [[ "${RESULT[$svc]}" != "pending" ]] && continue
+              VERDICT="pending"; V_STATE=""; V_REPS=""
+              evaluate "${STACK_NAME}_${svc}"
+              case "$VERDICT" in
+                ok)
+                  RESULT["$svc"]="ok"; pending=$((pending - 1))
+                  echo "✅ ${STACK_NAME}_${svc} convergió (estado=${V_STATE:-none}, réplicas=${V_REPS:-n/a})"
+                  ;;
+                fail)
+                  RESULT["$svc"]="fail"; pending=$((pending - 1))
+                  echo "::error::${STACK_NAME}_${svc}: Swarm revirtió/pausó el update (estado=${V_STATE}); la imagen nueva no quedó sana."
+                  ;;
+              esac
+            done
+            (( pending > 0 )) && sleep "$POLL_INTERVAL"
+          done
+
+          # Lo que siga pendiente tras el deadline = no convergió a tiempo (timeout).
+          for svc in "${SERVICES[@]}"; do
+            if [[ "${RESULT[$svc]}" == "pending" ]]; then
+              RESULT["$svc"]="fail"
+              echo "::error::${STACK_NAME}_${svc}: no convergió en ${TIMEOUT_SECONDS}s (timeout)."
+            fi
+          done
+
+          failed=()
+          for svc in "${SERVICES[@]}"; do
+            [[ "${RESULT[$svc]}" == "fail" ]] && failed+=("${STACK_NAME}_${svc}")
+          done
+
+          if (( ${#failed[@]} > 0 )); then
+            echo "## ❌ Deploy Swarm — no convergió" >> "$GITHUB_STEP_SUMMARY"
+            for full in "${failed[@]}"; do dump "$full"; done
+            echo "::error::Despliegue no convergió: ${failed[*]}. La imagen nueva no quedó sana (posible rollback de Swarm); ver diagnóstico arriba."
+            exit 1
+          fi
+          echo "✅ Todos los servicios del stack convergieron."
 
       - name: GC de Swarm secrets ${{ inputs.swarm_secret_prefix }}_* huérfanos
         if: always() && inputs.secret_names != ''
