@@ -22,6 +22,11 @@
 repos:
 
   # creado por create-repo (baseline)
+  - name: Cosmos.Impuestos.TenantProvisioning
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  # creado por create-repo (baseline)
   - name: Cosmos.Asistente.TenantProvisioning
     stack: github-actions
     consumes: [reusables, dependabot]
