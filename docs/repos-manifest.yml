@@ -22,6 +22,16 @@
 repos:
 
   # creado por create-repo (baseline)
+  - name: Cosmos.MCPERP
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  # creado por create-repo (baseline)
+  - name: ObligacionesPorPagar.IntegrationTests
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  # creado por create-repo (baseline)
   - name: Cosmos.ControlPlane.Front
     stack: github-actions
     consumes: [reusables, dependabot]
