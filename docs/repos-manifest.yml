@@ -22,6 +22,11 @@
 repos:
 
   # creado por create-repo (baseline)
+  - name: Cosmos.MCPs.Infraestructura
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  # creado por create-repo (baseline)
   - name: Cosmos.MCPERP
     stack: github-actions
     consumes: [reusables, dependabot]
