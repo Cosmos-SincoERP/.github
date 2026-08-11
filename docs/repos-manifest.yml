@@ -24,6 +24,10 @@ repos:
   - name: Cosmos.Buzon
     stack: dotnet
     consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /Cosmos.Buzon.Comandos.API
+        - /Cosmos.Buzon.Consultas.API
 
   # ── Borde de los MCP servers ────────────────────────────────────
   - name: Cosmos.MCPs.Infraestructura
