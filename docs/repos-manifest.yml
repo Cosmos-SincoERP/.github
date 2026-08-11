@@ -21,6 +21,11 @@
 
 repos:
 
+  # creado por create-repo (baseline)
+  - name: Cosmos.Buzon
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
   # ── Borde de los MCP servers ────────────────────────────────────
   - name: Cosmos.MCPs.Infraestructura
     stack: terraform
