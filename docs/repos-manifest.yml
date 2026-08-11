@@ -21,9 +21,8 @@
 
 repos:
 
-  # creado por create-repo (baseline)
   - name: Cosmos.Buzon
-    stack: github-actions
+    stack: dotnet
     consumes: [reusables, dependabot]
 
   # ── Borde de los MCP servers ────────────────────────────────────
