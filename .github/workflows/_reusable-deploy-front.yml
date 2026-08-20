@@ -1,7 +1,9 @@
 name: Deploy Front estático (reusable)
 
 concurrency:
-  group: deploy-${{ github.workflow }}-${{ inputs.environment || 'default' }}
+  # La clave `app_name` deja que apps distintas (p. ej. las dos de un monorepo)
+  # desplieguen en paralelo; la misma app al mismo ambiente sigue serializada.
+  group: deploy-${{ github.workflow }}-${{ inputs.app_name }}-${{ inputs.environment || 'default' }}
   cancel-in-progress: false
 
 # Despliega un SPA construido con Bun a un Storage Account static website
@@ -214,9 +216,13 @@ jobs:
         # runner self-hosted vería entonces un `.deploy/env.js.tmpl` stale
         # de un run anterior (el download no lo sobreescribe si no estaba
         # en el artefacto), causando substituciones con valores viejos.
+        #
+        # El namespace `app_name` en el nombre del artefacto existe porque las
+        # dos apps de un monorepo despliegan en el mismo run (mismo sha) y el
+        # nombre no puede colisionar (`upload-artifact@v7` falla con 409).
         uses: actions/upload-artifact@v7
         with:
-          name: front-build-${{ github.sha }}
+          name: front-build-${{ inputs.app_name }}-${{ github.sha }}
           path: |
             ${{ inputs.working_directory }}/dist
             ${{ inputs.working_directory }}/.deploy
@@ -249,7 +255,7 @@ jobs:
       - name: Descargar artefactos del build
         uses: actions/download-artifact@v8
         with:
-          name: front-build-${{ github.sha }}
+          name: front-build-${{ inputs.app_name }}-${{ github.sha }}
           path: .
 
       - name: Login a Azure (Managed Identity del runner)
