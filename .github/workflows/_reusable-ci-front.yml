@@ -1,7 +1,10 @@
 name: CI Front (reusable)
 
 concurrency:
-  group: pr-${{ github.head_ref }}-${{ github.workflow }}
+  # La clave `working_directory` permite que un monorepo llame a este reusable
+  # una vez por app desde el mismo PR sin que las llamadas se cancelen entre sí;
+  # un re-push de la misma app sigue cancelando su propio run viejo.
+  group: pr-${{ github.head_ref }}-${{ github.workflow }}-${{ inputs.working_directory }}
   cancel-in-progress: true
 
 on:
