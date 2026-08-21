@@ -113,6 +113,20 @@ on:
         type: boolean
         required: false
         default: false
+      run_test:
+        description: |
+          Ejecutar `bun run test` dentro del job `build`. Default `true` — sin
+          cambios para ningún front existente.
+          Ponerlo en `false` es para fronts cuya rama `main` ya está gateada por
+          un required check de CI que corre la suite completa (nada mergea sin
+          suite verde): ahí el Test del deploy paga dos veces por un resultado
+          que ya se tiene. Y para suites que ya no caben en el
+          `timeout-minutes: 10` del job `build` — la de OxP `apps/new` tarda
+          ~12 min en un runner estándar de 2 vCPU y el deploy muere por timeout
+          antes de llegar a publicar.
+        type: boolean
+        required: false
+        default: true
       app_base_files:
         description: |
           Lista separada por espacios de archivos del bundle que, además de su
@@ -201,6 +215,7 @@ jobs:
         run: bun run build
 
       - name: Test
+        if: inputs.run_test
         run: bun run test
 
       - name: Subir artefactos del build (dist + .deploy)
