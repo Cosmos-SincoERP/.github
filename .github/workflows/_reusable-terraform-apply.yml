@@ -165,6 +165,7 @@ jobs:
           ACTOR: ${{ github.actor }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
           REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
 
@@ -192,6 +193,15 @@ jobs:
           # del Environment prod (pieza 1), pero no dependemos solo de ella.
           if [ "$ENVIRONMENT" = "prod" ] && [ "$REF" != "refs/heads/main" ]; then
             echo "::error::apply prod solo desde refs/heads/main (ref actual: ${REF}). Apply denegado."
+            exit 1
+          fi
+
+          # prod ⇒ solo workflow_dispatch (A5 'acto deliberado'): un caller que
+          # conecte el apply prod a `push` aplicaría automático post-merge si el
+          # merger es del team — el gate de actor no distingue ese caso, este
+          # check sí. `event_name` es el evento del workflow CALLER.
+          if [ "$ENVIRONMENT" = "prod" ] && [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "::error::apply prod solo por workflow_dispatch (evento actual: ${EVENT_NAME}). Apply denegado (fail-closed)."
             exit 1
           fi
 
@@ -327,12 +337,18 @@ jobs:
           #     rompería el formato KEY=VALUE de $GITHUB_ENV e inyectaría env
           #     vars; un \r suelto quedaría embebido como ruido. Mejor fallar
           #     claro que inyectar en silencio.
+          #   - `TFVAR_ENVIRONMENT` se rechaza con error: `TF_VAR_environment`
+          #     lo fija el input `environment` (que también deriva el backend);
+          #     una var del caller que lo pisara rompería la coherencia
+          #     env↔state en silencio (p. ej. recursos "prod" en el state dev).
           #   - Borde conocido: una var llamada exactamente `TFVAR_` produce
           #     `TF_VAR_=<valor>`; Terraform la ignora.
           echo "$ALL_VARS_JSON" \
             | jq -r '(. // {}) | to_entries[]
                 | select((.key | startswith("TFVAR_")) and .value != "" and .value != null)
-                | if (.value | test("\r|\n"))
+                | if .key == "TFVAR_ENVIRONMENT"
+                  then error("TFVAR_ENVIRONMENT no está permitido: TF_VAR_environment lo fija el input environment (coherencia env↔state)")
+                  elif (.value | test("\r|\n"))
                   then error("valor multilínea no soportado en \(.key): usa un valor de una sola línea")
                   else "TF_VAR_\(.key | sub("^TFVAR_"; "") | ascii_downcase)=\(.value)" end' \
             >> "$GITHUB_ENV"

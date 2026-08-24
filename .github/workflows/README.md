@@ -69,7 +69,7 @@ Mantener estos nombres estables es contrato público: cambiarlos rompe los Rules
 | `_reusable-tests-dotnet.yml` | `Tests .NET (reusable)` | Restore + build + test de soluciones .NET, con exclusión de proyectos opcional. | `solution_path`, `working_directory`, `dotnet_version`, `configuration`, `excluded_projects` |
 | `_reusable-ci-front.yml` | `CI Front (reusable)` | Lint + test + build de fronts SPA (Bun), cada step togglable. | `working_directory`, `bun_version`, `run_lint`, `run_test`, `run_build`, `github_packages` |
 | `_reusable-terraform-plan.yml` | `Terraform plan (reusable)` | Ciclo `terraform plan` de los `*.Infraestructura`: job `validate` sin secretos (corre en todo PR, incl. Dependabot) + job `plan` autenticado (OIDC, GitHub Environment del caller) que comenta el resultado en el PR. | `bounded_context`, `environment`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `comment_on_pr` + `secrets: inherit` |
-| `_reusable-terraform-apply.yml` | `Terraform apply (reusable)` | `terraform apply` de los `*.Infraestructura` (OIDC + backend + GitHub Environment del caller); en prod exige gate de actor autorizado (team + `ACTOR_GATE_TOKEN`) y correr desde `main`; `concurrency` por BC y ambiente, no cancelable. | `bounded_context`, `environment`, `authorized_actor_team`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `apply_lock_timeout` + `secrets: inherit` |
+| `_reusable-terraform-apply.yml` | `Terraform apply (reusable)` | `terraform apply` de los `*.Infraestructura` (OIDC + backend + GitHub Environment del caller); en prod exige gate de actor autorizado (team + `ACTOR_GATE_TOKEN`) y correr desde `main` por `workflow_dispatch`; `concurrency` por BC y ambiente, no cancelable. | `bounded_context`, `environment`, `authorized_actor_team`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `apply_lock_timeout` + `secrets: inherit` |
 
 > Ejemplo de Ruleset (en el repo consumidor): para hacer required el check de un PR que invoca `_reusable-dependency-review.yml`, el repo debe listar exactamente el string **`Dependency Review`** en `required_status_checks`. El mismo principio aplica para los demás reusables.
 
@@ -457,7 +457,8 @@ TF_VAR_* comunes se leen de `vars`/`secrets` del caller (que pasa
 `secrets: inherit`); los por-BC llegan por la convención **`TFVAR_*`** (toda var
 del caller `TFVAR_<NOMBRE>` — org/repo/Environment — se exporta como
 `TF_VAR_<nombre>` y gana sobre `extra_tf_vars_json`, que queda como vía legada;
-valores multilínea se rechazan). Fail-closed: overrides `backend_*` con marcador
+valores multilínea y `TFVAR_ENVIRONMENT` se rechazan — `TF_VAR_environment` lo
+fija el input `environment`). Fail-closed: overrides `backend_*` con marcador
 `prod` exigen `environment=prod`; `environment` debe venir **en minúsculas**
 (el valor crudo viaja al subject OIDC y Entra lo matchea case-sensitive).
 
@@ -489,7 +490,9 @@ Secrets (vía `secrets: inherit` del caller): `VM_ADMIN_PASSWORD`, `GH_RUNNER_PA
 API que `github.actor` — y en un re-run también `github.triggering_actor`, si
 difiere — sea miembro **activo** del team, antes de tocar Terraform. Invariantes
 prod (fail-closed): `environment=prod` ⇒ team obligatorio (su ausencia falla el
-job) y apply solo desde `refs/heads/main`.
+job), apply solo desde `refs/heads/main` y solo por `workflow_dispatch` (un
+caller prod conectado a `push` es denegado: el apply prod es un acto deliberado,
+no un post-merge automático).
 
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|

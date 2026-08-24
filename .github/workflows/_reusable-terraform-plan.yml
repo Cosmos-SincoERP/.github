@@ -283,12 +283,18 @@ jobs:
           #     rompería el formato KEY=VALUE de $GITHUB_ENV e inyectaría env
           #     vars; un \r suelto quedaría embebido como ruido. Mejor fallar
           #     claro que inyectar en silencio.
+          #   - `TFVAR_ENVIRONMENT` se rechaza con error: `TF_VAR_environment`
+          #     lo fija el input `environment` (que también deriva el backend);
+          #     una var del caller que lo pisara rompería la coherencia
+          #     env↔state en silencio (p. ej. recursos "prod" en el state dev).
           #   - Borde conocido: una var llamada exactamente `TFVAR_` produce
           #     `TF_VAR_=<valor>`; Terraform la ignora.
           echo "$ALL_VARS_JSON" \
             | jq -r '(. // {}) | to_entries[]
                 | select((.key | startswith("TFVAR_")) and .value != "" and .value != null)
-                | if (.value | test("\r|\n"))
+                | if .key == "TFVAR_ENVIRONMENT"
+                  then error("TFVAR_ENVIRONMENT no está permitido: TF_VAR_environment lo fija el input environment (coherencia env↔state)")
+                  elif (.value | test("\r|\n"))
                   then error("valor multilínea no soportado en \(.key): usa un valor de una sola línea")
                   else "TF_VAR_\(.key | sub("^TFVAR_"; "") | ascii_downcase)=\(.value)" end' \
             >> "$GITHUB_ENV"
