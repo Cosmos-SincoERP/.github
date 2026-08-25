@@ -8,10 +8,14 @@ name: Terraform plan (reusable)
 #     correr ahí y se saltea; validate sí, porque no necesita secretos ni backend.
 #   - plan: plan autenticado (OIDC + backend azurerm) que comenta el resultado en
 #     el PR. Se saltea para PRs de Dependabot (`if: github.actor != 'dependabot[bot]'`).
-# El backend se deriva del `bounded_context` por convención CAF (con overrides
-# opcionales). Los TF_VAR_* comunes se leen de `vars`/`secrets` del CALLER (en un
-# reusable el context `vars` y `secrets: inherit` resuelven al repo que llama);
-# los por-BC (front_*) llegan en `extra_tf_vars_json`.
+# El backend se deriva del `bounded_context` y el `environment` por convención CAF
+# (con overrides opcionales). El job declara `environment:` (GitHub Environment del
+# repo CALLER), así que `vars`/`secrets` resuelven primero al Environment y caen a
+# repo-level. Los TF_VAR_* comunes se leen de `vars`/`secrets` del CALLER; los
+# por-BC (front_*) llegan como vars `TFVAR_*` del caller (org/repo/Environment,
+# resueltas DENTRO del job → sí ven el Environment) o, legado, en
+# `extra_tf_vars_json` (que el caller evalúa SIN Environment: repo/org vars
+# solamente).
 
 on:
   workflow_call:
@@ -20,6 +24,17 @@ on:
         description: "Bounded context corto (cont|asis|impu|oxp). Deriva el backend y etiqueta el comentario."
         type: string
         required: true
+      environment:
+        description: |
+          Ambiente objetivo (dev|prod, EN MINÚSCULAS: el valor crudo viaja al
+          subject OIDC; otra caja falla temprano). Deriva el backend del state
+          (dev → rg-tfstate-<bc>-eus2-001 / sttfstate<bc>eus2001 / <bc>-dev.tfstate;
+          prod → rg-tfstate-<bc>-prod-eus2-001 / sttfstate<bc>prodeus2001 / <bc>-prod.tfstate),
+          se declara como GitHub Environment en el job (vars/secrets por Environment)
+          y se exporta como TF_VAR_environment.
+        type: string
+        required: false
+        default: "dev"
       tf_version:
         description: "Versión de Terraform para setup-terraform."
         type: string
@@ -35,6 +50,11 @@ on:
           JSON object {"<tf_var>": "<valor>"} con TF_VARs adicionales NO sensibles
           (típicamente las `front_<bc>_*`). Cada entrada no vacía se exporta como
           TF_VAR_<key>. NUNCA poner secretos acá: los inputs no se enmascaran en logs.
+          OJO: el caller evalúa este input SIN Environment (solo vars repo/org).
+          Para TF_VARs con valor por ambiente, preferir la convención TFVAR_*:
+          toda var `TFVAR_<NOMBRE>` del caller (org/repo/Environment, precedencia
+          estándar de GitHub) se exporta como `TF_VAR_<nombre>` y GANA sobre este
+          input.
         type: string
         required: false
         default: "{}"
@@ -54,12 +74,12 @@ on:
         required: false
         default: 60000
       backend_resource_group:
-        description: "Override del Resource Group del backend. Vacío → rg-tfstate-<bc>-eus2-001."
+        description: "Override del Resource Group del backend. Vacío → derivado de bounded_context + environment."
         type: string
         required: false
         default: ""
       backend_storage_account:
-        description: "Override del Storage Account del backend. Vacío → sttfstate<bc>eus2001."
+        description: "Override del Storage Account del backend. Vacío → derivado de bounded_context + environment."
         type: string
         required: false
         default: ""
@@ -69,7 +89,7 @@ on:
         required: false
         default: "tfstate"
       backend_key:
-        description: "Override del key del state. Vacío → <bc>-dev.tfstate."
+        description: "Override del key del state. Vacío → <bc>-<environment>.tfstate."
         type: string
         required: false
         default: ""
@@ -127,6 +147,11 @@ jobs:
     needs: validate
     if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    # GitHub Environment del repo CALLER: habilita vars/secrets por Environment
+    # (A9). Si el Environment no existe aún en el caller, GitHub lo crea al
+    # correr y vars/secrets caen a repo-level (retrocompatible). El Environment
+    # `dev` NO debe tener deployment branch policy (el plan corre en refs de PR).
+    environment: ${{ inputs.environment }}
     permissions:
       id-token: write
       contents: read
@@ -136,7 +161,7 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
     env:
       # Auth Azure → Terraform azurerm provider y backend con OIDC.
-      # vars.* resuelven al repo CALLER.
+      # vars.* resuelven al repo CALLER (Environment del job primero, luego repo).
       ARM_USE_OIDC: 'true'
       ARM_USE_AZUREAD: 'true'
       ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
@@ -150,10 +175,15 @@ jobs:
         shell: bash
         env:
           BC: ${{ inputs.bounded_context }}
+          ENVIRONMENT: ${{ inputs.environment }}
           BACKEND_RG: ${{ inputs.backend_resource_group }}
           BACKEND_SA: ${{ inputs.backend_storage_account }}
+          BACKEND_CONTAINER: ${{ inputs.backend_container }}
           BACKEND_KEY_OVERRIDE: ${{ inputs.backend_key }}
           EXTRA_TF_VARS_JSON: ${{ inputs.extra_tf_vars_json }}
+          # TODAS las vars visibles al job (org + repo + Environment del caller,
+          # ya resueltas por precedencia). De acá salen las TFVAR_*.
+          ALL_VARS_JSON: ${{ toJSON(vars) }}
           # Comunes (vars/secrets del caller). Vacío → no se exporta el TF_VAR.
           V_OWNER: ${{ vars.OWNER }}
           V_COST_CENTER: ${{ vars.COST_CENTER }}
@@ -167,17 +197,63 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Backend: deriva de bounded_context salvo override explícito.
+          # Valor canónico en minúsculas, EXIGIDO del caller (fail-fast,
+          # coherente con el apply): el subject OIDC usa el input crudo —
+          # fuera del alcance de bash — y Entra matchea el subject
+          # case-sensitive. Mejor morir aquí, claro, que en azure/login.
+          env_lower="$(printf '%s' "$ENVIRONMENT" | tr '[:upper:]' '[:lower:]')"
+          if [ "$ENVIRONMENT" != "$env_lower" ]; then
+            echo "::error::environment '${ENVIRONMENT}' debe ir en minúsculas (dev|prod). Denegado (fail-closed)."
+            exit 1
+          fi
+          ENVIRONMENT="$env_lower"
+
+          # Backend: deriva de bounded_context + environment salvo override
+          # explícito. Los nombres dev son legados (sin marcador de ambiente);
+          # los prod codifican el ambiente (A6).
+          case "$ENVIRONMENT" in
+            dev)
+              rg_default="rg-tfstate-${BC}-eus2-001"
+              sa_default="sttfstate${BC}eus2001"
+              ;;
+            prod)
+              rg_default="rg-tfstate-${BC}-prod-eus2-001"
+              sa_default="sttfstate${BC}prodeus2001"
+              ;;
+            *)
+              echo "::error::environment '${ENVIRONMENT}' no soportado (dev|prod)."
+              exit 1
+              ;;
+          esac
+          backend_rg="${BACKEND_RG:-${rg_default}}"
+          backend_sa="${BACKEND_SA:-${sa_default}}"
+          backend_key="${BACKEND_KEY_OVERRIDE:-${BC}-${ENVIRONMENT}.tfstate}"
+
+          # Coherente con el apply: los overrides backend_* no pueden apuntar a
+          # un state prod salvo que environment=prod (aquí evita, además, que
+          # un plan de PR lea state prod y lo publique en el comment). Los
+          # nombres dev nunca contienen "prod" (convención A6). El match se
+          # hace en minúsculas: Azure trata los nombres de RG case-insensitive
+          # (solo los de SA son minúsculas forzadas).
+          if [ "$ENVIRONMENT" != "prod" ]; then
+            case "$(printf '%s|%s|%s|%s' "$backend_rg" "$backend_sa" "$BACKEND_CONTAINER" "$backend_key" | tr '[:upper:]' '[:lower:]')" in
+              *prod*)
+                echo "::error::backend con marcador 'prod' (${backend_rg} / ${backend_sa} / ${BACKEND_CONTAINER} / ${backend_key}) exige environment=prod. Denegado (fail-closed)."
+                exit 1
+                ;;
+            esac
+          fi
           {
-            echo "BACKEND_RESOURCE_GROUP=${BACKEND_RG:-rg-tfstate-${BC}-eus2-001}"
-            echo "BACKEND_STORAGE_ACCOUNT=${BACKEND_SA:-sttfstate${BC}eus2001}"
-            echo "BACKEND_KEY=${BACKEND_KEY_OVERRIDE:-${BC}-dev.tfstate}"
+            echo "BACKEND_RESOURCE_GROUP=${backend_rg}"
+            echo "BACKEND_STORAGE_ACCOUNT=${backend_sa}"
+            echo "BACKEND_KEY=${backend_key}"
           } >> "$GITHUB_ENV"
 
           # TF_VARs comunes: exportar solo los no vacíos (un TF_VAR vacío de una
           # variable requerida rompería el plan; uno de una variable no declarada
           # Terraform lo ignora, pero igual evitamos exportarlo).
           emit() { [ -n "${2:-}" ] && printf 'TF_VAR_%s=%s\n' "$1" "$2" >> "$GITHUB_ENV" || true; }
+          emit environment             "${ENVIRONMENT:-}"
           emit owner                   "${V_OWNER:-}"
           emit cost_center             "${V_COST_CENTER:-}"
           emit ssh_allowed_source_ips  "${V_SSH_IPS:-}"
@@ -188,9 +264,39 @@ jobs:
           emit sincoerp_password       "${S_SINCOERP:-}"
           emit flagsmith_api_key       "${S_FLAGSMITH:-}"
 
-          # TF_VARs por-BC no sensibles (front_*) desde el JSON del caller.
+          # TF_VARs por-BC no sensibles (front_*) desde el JSON del caller (legado).
           echo "$EXTRA_TF_VARS_JSON" \
             | jq -r 'to_entries[] | select(.value != "" and .value != null) | "TF_VAR_\(.key)=\(.value)"' \
+            >> "$GITHUB_ENV"
+
+          # Convención TFVAR_*: toda var del caller `TFVAR_<NOMBRE>` (org/repo/
+          # Environment, precedencia estándar de GitHub) se exporta como
+          # `TF_VAR_<nombre>` (en minúsculas). El prefijo debe ir en MAYÚSCULAS
+          # exactas (`TFVAR_`); una var mal escrita se ignora en silencio. Es la
+          # vía por-ambiente para las TF_VARs por-BC: se define la MISMA var en
+          # el Environment dev y prod, cada una con su valor, sin sufijos ni
+          # callers divergentes. Se exporta al final: gana sobre
+          # extra_tf_vars_json.
+          #   - `(. // {})`: si el caller no tiene NINGUNA var, toJSON(vars) es
+          #     `null` y jq abortaría; el guard lo trata como objeto vacío.
+          #   - `error(...)` en valores con salto de línea (\n o \r): un newline
+          #     rompería el formato KEY=VALUE de $GITHUB_ENV e inyectaría env
+          #     vars; un \r suelto quedaría embebido como ruido. Mejor fallar
+          #     claro que inyectar en silencio.
+          #   - `TFVAR_ENVIRONMENT` se rechaza con error: `TF_VAR_environment`
+          #     lo fija el input `environment` (que también deriva el backend);
+          #     una var del caller que lo pisara rompería la coherencia
+          #     env↔state en silencio (p. ej. recursos "prod" en el state dev).
+          #   - Borde conocido: una var llamada exactamente `TFVAR_` produce
+          #     `TF_VAR_=<valor>`; Terraform la ignora.
+          echo "$ALL_VARS_JSON" \
+            | jq -r '(. // {}) | to_entries[]
+                | select((.key | startswith("TFVAR_")) and .value != "" and .value != null)
+                | if .key == "TFVAR_ENVIRONMENT"
+                  then error("TFVAR_ENVIRONMENT no está permitido: TF_VAR_environment lo fija el input environment (coherencia env↔state)")
+                  elif (.value | test("\r|\n"))
+                  then error("valor multilínea no soportado en \(.key): usa un valor de una sola línea")
+                  else "TF_VAR_\(.key | sub("^TFVAR_"; "") | ascii_downcase)=\(.value)" end' \
             >> "$GITHUB_ENV"
 
       - name: Azure login (OIDC)
@@ -235,6 +341,7 @@ jobs:
           WORKING_DIRECTORY: ${{ inputs.working_directory }}
           COMMENT_MAX_CHARS: ${{ inputs.comment_max_chars }}
           BOUNDED_CONTEXT: ${{ inputs.bounded_context }}
+          ENVIRONMENT: ${{ inputs.environment }}
         with:
           script: |
             const fs = require('fs');
@@ -242,7 +349,15 @@ jobs:
             const workdir = process.env.WORKING_DIRECTORY;
             const limit = parseInt(process.env.COMMENT_MAX_CHARS, 10);
             const bc = process.env.BOUNDED_CONTEXT;
-            const marker = '<!-- infra-plan-comment -->';
+            const env = process.env.ENVIRONMENT;
+            // El marker identifica el comentario a actualizar. dev conserva el
+            // marker histórico (los PRs abiertos siguen actualizando su comment);
+            // otros ambientes usan marker propio para no pisar el plan de dev
+            // cuando ambos comentan en el mismo PR.
+            const marker = env === 'dev'
+              ? '<!-- infra-plan-comment -->'
+              : `<!-- infra-plan-comment:${env} -->`;
+            const header = `### \`terraform plan\` — ${bc} (Azure ${env.toUpperCase()})`;
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const planPath = `${workdir}/plan.txt`;
 
@@ -256,7 +371,7 @@ jobs:
               }
               body = [
                 marker,
-                `### \`terraform plan\` — ${bc} (Azure DEV)`,
+                header,
                 '',
                 truncated ? `> ⚠️ Plan truncado a ${limit} caracteres. Ver el [run completo](${runUrl}).` : `> Run: ${runUrl}`,
                 '',
@@ -267,7 +382,7 @@ jobs:
             } else {
               body = [
                 marker,
-                `### \`terraform plan\` — ${bc} (Azure DEV)`,
+                header,
                 '',
                 `❌ El plan falló (exit ${exitCode}). Ver el [run completo](${runUrl}).`,
               ].join('\n');

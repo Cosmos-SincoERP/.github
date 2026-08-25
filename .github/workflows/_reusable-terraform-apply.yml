@@ -1,11 +1,16 @@
 name: Terraform apply (reusable)
 
-# Encapsula el `terraform apply` de los repos *.Infraestructura del plane, para
-# correr en `push` a main (post-merge). Un solo job autenticado (OIDC + backend
-# azurerm): init → validate → plan → apply -auto-approve. El backend se deriva del
-# `bounded_context` por convención CAF (con overrides). Los TF_VAR_* comunes se
-# leen de `vars`/`secrets` del CALLER (resuelven al repo que llama); los por-BC
-# (front_*) llegan en `extra_tf_vars_json`. `concurrency` no cancelable: nunca se
+# Encapsula el `terraform apply` de los repos *.Infraestructura del plane. En dev
+# corre en `push` a main (post-merge); en prod SOLO por `workflow_dispatch` del
+# caller, con gate de actor autorizado (A5). Un solo job autenticado (OIDC +
+# backend azurerm): [gate] → init → validate → plan → apply -auto-approve. El
+# backend se deriva del `bounded_context` y el `environment` por convención CAF
+# (con overrides). El job declara `environment:` (GitHub Environment del repo
+# CALLER), así que `vars`/`secrets` resuelven primero al Environment y caen a
+# repo-level. Los TF_VAR_* comunes se leen de `vars`/`secrets` del CALLER; los
+# por-BC (front_*) llegan como vars `TFVAR_*` del caller (org/repo/Environment,
+# resueltas DENTRO del job → sí ven el Environment) o, legado, en
+# `extra_tf_vars_json`. `concurrency` no cancelable por BC + ambiente: nunca se
 # aborta un apply en curso.
 
 on:
@@ -15,6 +20,30 @@ on:
         description: "Bounded context corto (cont|asis|impu|oxp). Deriva el backend y etiqueta el resumen."
         type: string
         required: true
+      environment:
+        description: |
+          Ambiente objetivo (dev|prod, EN MINÚSCULAS: el valor crudo viaja al
+          subject OIDC y al concurrency.group; otra caja falla temprano).
+          Deriva el backend del state
+          (dev → rg-tfstate-<bc>-eus2-001 / sttfstate<bc>eus2001 / <bc>-dev.tfstate;
+          prod → rg-tfstate-<bc>-prod-eus2-001 / sttfstate<bc>prodeus2001 / <bc>-prod.tfstate),
+          se declara como GitHub Environment en el job (vars/secrets por Environment)
+          y se exporta como TF_VAR_environment.
+        type: string
+        required: false
+        default: "dev"
+      authorized_actor_team:
+        description: |
+          Slug de un team de la org. Si viene poblado, el apply valida que
+          `github.actor` — y en un RE-RUN también `github.triggering_actor`,
+          cuando viene informado y difiere — sea miembro ACTIVO de ese team
+          antes de tocar Terraform, y falla si no (gate A5). Requiere el secret
+          ACTOR_GATE_TOKEN. Vacío → sin gate SOLO fuera de prod (comportamiento
+          dev actual); con environment=prod el gate es obligatorio y la
+          ausencia de team falla el job (fail-closed).
+        type: string
+        required: false
+        default: ""
       tf_version:
         description: "Versión de Terraform para setup-terraform."
         type: string
@@ -30,6 +59,11 @@ on:
           JSON object {"<tf_var>": "<valor>"} con TF_VARs adicionales NO sensibles
           (típicamente las `front_<bc>_*`). Cada entrada no vacía se exporta como
           TF_VAR_<key>. NUNCA poner secretos acá: los inputs no se enmascaran en logs.
+          OJO: el caller evalúa este input SIN Environment (solo vars repo/org).
+          Para TF_VARs con valor por ambiente, preferir la convención TFVAR_*:
+          toda var `TFVAR_<NOMBRE>` del caller (org/repo/Environment, precedencia
+          estándar de GitHub) se exporta como `TF_VAR_<nombre>` y GANA sobre este
+          input.
         type: string
         required: false
         default: "{}"
@@ -39,12 +73,12 @@ on:
         required: false
         default: "10m"
       backend_resource_group:
-        description: "Override del Resource Group del backend. Vacío → rg-tfstate-<bc>-eus2-001."
+        description: "Override del Resource Group del backend. Vacío → derivado de bounded_context + environment."
         type: string
         required: false
         default: ""
       backend_storage_account:
-        description: "Override del Storage Account del backend. Vacío → sttfstate<bc>eus2001."
+        description: "Override del Storage Account del backend. Vacío → derivado de bounded_context + environment."
         type: string
         required: false
         default: ""
@@ -54,7 +88,7 @@ on:
         required: false
         default: "tfstate"
       backend_key:
-        description: "Override del key del state. Vacío → <bc>-dev.tfstate."
+        description: "Override del key del state. Vacío → <bc>-<environment>.tfstate."
         type: string
         required: false
         default: ""
@@ -71,18 +105,32 @@ on:
       FLAGSMITH_API_KEY:
         description: "API key de Flagsmith (→ TF_VAR_flagsmith_api_key). Usado por cont; vacío y omitido en los BCs que no usan Flagsmith."
         required: false
+      ACTOR_GATE_TOKEN:
+        description: |
+          Token con permiso de lectura de members de la org (fine-grained PAT
+          'Organization members: Read' o token de App) para validar la membresía
+          de `github.actor` en `authorized_actor_team` vía API. Obligatorio
+          cuando `authorized_actor_team` viene poblado; el gate falla cerrado si
+          falta. El GITHUB_TOKEN del run NO sirve (no lee teams de la org).
+        required: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: infra-apply-${{ inputs.bounded_context }}
+  group: infra-apply-${{ inputs.bounded_context }}-${{ inputs.environment }}
   cancel-in-progress: false
 
 jobs:
   apply:
     name: terraform apply
     runs-on: ubuntu-latest
+    # GitHub Environment del repo CALLER: habilita vars/secrets por Environment
+    # (A9) y, en `prod`, la deployment branch policy (`main`) restringe desde
+    # qué ref puede correr el apply. Si el Environment no existe aún en el
+    # caller, GitHub lo crea al correr y vars/secrets caen a repo-level
+    # (retrocompatible).
+    environment: ${{ inputs.environment }}
     permissions:
       id-token: write
       contents: read
@@ -96,6 +144,88 @@ jobs:
       ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
       ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
     steps:
+      # Gate A5: primero y fail-closed. Corre antes del checkout (el
+      # working_directory del repo aún no existe → override a workspace).
+      # Invariante: prod ⇒ gate obligatorio. El `if:` corre el step cuando hay
+      # team O cuando el ambiente es prod (aunque falte el team → falla dentro).
+      # Así un caller prod que olvide `authorized_actor_team` NO aplica sin gate.
+      - name: Gate de actor autorizado
+        if: inputs.authorized_actor_team != '' || inputs.environment == 'prod'
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ACTOR_GATE_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+          TEAM: ${{ inputs.authorized_actor_team }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          # Validamos AMBOS: `actor` es quien disparó originalmente; en un
+          # RE-RUN, `actor` conserva ese valor y `triggering_actor` es quien
+          # re-ejecuta. Exigir que los dos estén en el team cierra el bypass de
+          # "un autorizado dispara, un no-autorizado re-ejecuta".
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          # GitHub compara strings case-insensitive en `if:` (así entró este
+          # step) pero bash no. El valor canónico es minúsculas y se EXIGE del
+          # caller (fail-fast): GitHub Expressions no tiene lower(), así que un
+          # "PROD" crudo llegaría intacto al subject OIDC (environment:PROD) y
+          # al concurrency.group, y moriría tarde en azure/login con un
+          # AADSTS700213 confuso (Entra matchea el subject case-sensitive).
+          env_lower="$(printf '%s' "$ENVIRONMENT" | tr '[:upper:]' '[:lower:]')"
+          if [ "$ENVIRONMENT" != "$env_lower" ]; then
+            echo "::error::environment '${ENVIRONMENT}' debe ir en minúsculas (dev|prod). Apply denegado (fail-closed)."
+            exit 1
+          fi
+          ENVIRONMENT="$env_lower"
+
+          # prod ⇒ gate obligatorio: sin team declarado, denegar (fail-closed).
+          if [ "$ENVIRONMENT" = "prod" ] && [ -z "${TEAM:-}" ]; then
+            echo "::error::environment=prod exige 'authorized_actor_team'. Apply denegado (fail-closed)."
+            exit 1
+          fi
+
+          # prod ⇒ solo desde main (A5 'workflow_dispatch sobre main'). Defensa
+          # en profundidad: la red primaria es la deployment branch policy `main`
+          # del Environment prod (pieza 1), pero no dependemos solo de ella.
+          if [ "$ENVIRONMENT" = "prod" ] && [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::apply prod solo desde refs/heads/main (ref actual: ${REF}). Apply denegado."
+            exit 1
+          fi
+
+          # prod ⇒ solo workflow_dispatch (A5 'acto deliberado'): un caller que
+          # conecte el apply prod a `push` aplicaría automático post-merge si el
+          # merger es del team — el gate de actor no distingue ese caso, este
+          # check sí. `event_name` es el evento del workflow CALLER.
+          if [ "$ENVIRONMENT" = "prod" ] && [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "::error::apply prod solo por workflow_dispatch (evento actual: ${EVENT_NAME}). Apply denegado (fail-closed)."
+            exit 1
+          fi
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::gate activo pero falta el secret ACTOR_GATE_TOKEN. Apply denegado (fail-closed)."
+            exit 1
+          fi
+
+          # Verifica membresía ACTIVA en el team para cada actor relevante.
+          check_member() {
+            local who="$1"
+            local st
+            st="$(gh api "orgs/${ORG}/teams/${TEAM}/memberships/${who}" --jq .state 2>/dev/null || true)"
+            if [ "$st" != "active" ]; then
+              echo "::error::'${who}' no es miembro activo del team '${ORG}/${TEAM}'. Apply denegado."
+              exit 1
+            fi
+          }
+          check_member "$ACTOR"
+          if [ -n "${TRIGGERING_ACTOR:-}" ] && [ "$TRIGGERING_ACTOR" != "$ACTOR" ]; then
+            check_member "$TRIGGERING_ACTOR"
+          fi
+          echo "Actor(es) autorizado(s) por el team '${ORG}/${TEAM}': ${ACTOR}${TRIGGERING_ACTOR:+, ${TRIGGERING_ACTOR}}."
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -103,10 +233,15 @@ jobs:
         shell: bash
         env:
           BC: ${{ inputs.bounded_context }}
+          ENVIRONMENT: ${{ inputs.environment }}
           BACKEND_RG: ${{ inputs.backend_resource_group }}
           BACKEND_SA: ${{ inputs.backend_storage_account }}
+          BACKEND_CONTAINER: ${{ inputs.backend_container }}
           BACKEND_KEY_OVERRIDE: ${{ inputs.backend_key }}
           EXTRA_TF_VARS_JSON: ${{ inputs.extra_tf_vars_json }}
+          # TODAS las vars visibles al job (org + repo + Environment del caller,
+          # ya resueltas por precedencia). De acá salen las TFVAR_*.
+          ALL_VARS_JSON: ${{ toJSON(vars) }}
           V_OWNER: ${{ vars.OWNER }}
           V_COST_CENTER: ${{ vars.COST_CENTER }}
           V_SSH_IPS: ${{ vars.SSH_ALLOWED_SOURCE_IPS }}
@@ -119,13 +254,61 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Valor canónico en minúsculas, EXIGIDO del caller (fail-fast,
+          # coherente con el gate): el subject OIDC y el concurrency.group usan
+          # el input crudo — fuera del alcance de bash — y Entra matchea el
+          # subject case-sensitive. Mejor morir aquí, claro, que en azure/login.
+          env_lower="$(printf '%s' "$ENVIRONMENT" | tr '[:upper:]' '[:lower:]')"
+          if [ "$ENVIRONMENT" != "$env_lower" ]; then
+            echo "::error::environment '${ENVIRONMENT}' debe ir en minúsculas (dev|prod). Denegado (fail-closed)."
+            exit 1
+          fi
+          ENVIRONMENT="$env_lower"
+
+          # Backend: deriva de bounded_context + environment salvo override
+          # explícito. Los nombres dev son legados (sin marcador de ambiente);
+          # los prod codifican el ambiente (A6).
+          case "$ENVIRONMENT" in
+            dev)
+              rg_default="rg-tfstate-${BC}-eus2-001"
+              sa_default="sttfstate${BC}eus2001"
+              ;;
+            prod)
+              rg_default="rg-tfstate-${BC}-prod-eus2-001"
+              sa_default="sttfstate${BC}prodeus2001"
+              ;;
+            *)
+              echo "::error::environment '${ENVIRONMENT}' no soportado (dev|prod)."
+              exit 1
+              ;;
+          esac
+          backend_rg="${BACKEND_RG:-${rg_default}}"
+          backend_sa="${BACKEND_SA:-${sa_default}}"
+          backend_key="${BACKEND_KEY_OVERRIDE:-${BC}-${ENVIRONMENT}.tfstate}"
+
+          # El gate A5 se activa por `environment`, no por el destino real del
+          # state: sin este check, un caller con environment=dev podría apuntar
+          # los overrides backend_* al state de PROD y aplicar sin gate. Los
+          # nombres dev nunca contienen "prod" (convención A6), así que el
+          # marcador identifica el destino sin falsos positivos. El match se
+          # hace en minúsculas: Azure trata los nombres de RG case-insensitive
+          # (solo los de SA son minúsculas forzadas).
+          if [ "$ENVIRONMENT" != "prod" ]; then
+            case "$(printf '%s|%s|%s|%s' "$backend_rg" "$backend_sa" "$BACKEND_CONTAINER" "$backend_key" | tr '[:upper:]' '[:lower:]')" in
+              *prod*)
+                echo "::error::backend con marcador 'prod' (${backend_rg} / ${backend_sa} / ${BACKEND_CONTAINER} / ${backend_key}) exige environment=prod (gate A5). Denegado (fail-closed)."
+                exit 1
+                ;;
+            esac
+          fi
           {
-            echo "BACKEND_RESOURCE_GROUP=${BACKEND_RG:-rg-tfstate-${BC}-eus2-001}"
-            echo "BACKEND_STORAGE_ACCOUNT=${BACKEND_SA:-sttfstate${BC}eus2001}"
-            echo "BACKEND_KEY=${BACKEND_KEY_OVERRIDE:-${BC}-dev.tfstate}"
+            echo "BACKEND_RESOURCE_GROUP=${backend_rg}"
+            echo "BACKEND_STORAGE_ACCOUNT=${backend_sa}"
+            echo "BACKEND_KEY=${backend_key}"
           } >> "$GITHUB_ENV"
 
           emit() { [ -n "${2:-}" ] && printf 'TF_VAR_%s=%s\n' "$1" "$2" >> "$GITHUB_ENV" || true; }
+          emit environment             "${ENVIRONMENT:-}"
           emit owner                   "${V_OWNER:-}"
           emit cost_center             "${V_COST_CENTER:-}"
           emit ssh_allowed_source_ips  "${V_SSH_IPS:-}"
@@ -138,6 +321,36 @@ jobs:
 
           echo "$EXTRA_TF_VARS_JSON" \
             | jq -r 'to_entries[] | select(.value != "" and .value != null) | "TF_VAR_\(.key)=\(.value)"' \
+            >> "$GITHUB_ENV"
+
+          # Convención TFVAR_*: toda var del caller `TFVAR_<NOMBRE>` (org/repo/
+          # Environment, precedencia estándar de GitHub) se exporta como
+          # `TF_VAR_<nombre>` (en minúsculas). El prefijo debe ir en MAYÚSCULAS
+          # exactas (`TFVAR_`); una var mal escrita se ignora en silencio. Es la
+          # vía por-ambiente para las TF_VARs por-BC: se define la MISMA var en
+          # el Environment dev y prod, cada una con su valor, sin sufijos ni
+          # callers divergentes. Se exporta al final: gana sobre
+          # extra_tf_vars_json.
+          #   - `(. // {})`: si el caller no tiene NINGUNA var, toJSON(vars) es
+          #     `null` y jq abortaría; el guard lo trata como objeto vacío.
+          #   - `error(...)` en valores con salto de línea (\n o \r): un newline
+          #     rompería el formato KEY=VALUE de $GITHUB_ENV e inyectaría env
+          #     vars; un \r suelto quedaría embebido como ruido. Mejor fallar
+          #     claro que inyectar en silencio.
+          #   - `TFVAR_ENVIRONMENT` se rechaza con error: `TF_VAR_environment`
+          #     lo fija el input `environment` (que también deriva el backend);
+          #     una var del caller que lo pisara rompería la coherencia
+          #     env↔state en silencio (p. ej. recursos "prod" en el state dev).
+          #   - Borde conocido: una var llamada exactamente `TFVAR_` produce
+          #     `TF_VAR_=<valor>`; Terraform la ignora.
+          echo "$ALL_VARS_JSON" \
+            | jq -r '(. // {}) | to_entries[]
+                | select((.key | startswith("TFVAR_")) and .value != "" and .value != null)
+                | if .key == "TFVAR_ENVIRONMENT"
+                  then error("TFVAR_ENVIRONMENT no está permitido: TF_VAR_environment lo fija el input environment (coherencia env↔state)")
+                  elif (.value | test("\r|\n"))
+                  then error("valor multilínea no soportado en \(.key): usa un valor de una sola línea")
+                  else "TF_VAR_\(.key | sub("^TFVAR_"; "") | ascii_downcase)=\(.value)" end' \
             >> "$GITHUB_ENV"
 
       - name: Azure login (OIDC)
@@ -174,13 +387,20 @@ jobs:
 
       - name: Resumen del apply
         if: always()
+        # Override al workspace: este step corre con `always()` incluso si el
+        # gate denegó ANTES del checkout, cuando el default `infra/` aún no
+        # existe. Sin el override, `cd infra` reventaría en la ruta de
+        # denegación y ensuciaría el diagnóstico.
+        working-directory: ${{ github.workspace }}
         shell: bash
         env:
           BC: ${{ inputs.bounded_context }}
+          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           {
-            echo "## infra-apply (${BC})"
+            echo "## infra-apply (${BC} / ${ENVIRONMENT})"
             echo ""
             echo "- commit: \`${{ github.sha }}\`"
+            echo "- actor: \`${{ github.actor }}\`"
             echo "- status: \`${{ job.status }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

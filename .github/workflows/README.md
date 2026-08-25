@@ -68,8 +68,8 @@ Mantener estos nombres estables es contrato público: cambiarlos rompe los Rules
 | `_reusable-secret-scan.yml` | `Secret Scan (gitleaks)` | Mitigación open-source de secret scanning (gitleaks) para repos privados sin GHAS (ADR 0002 E.6). | `config-path` |
 | `_reusable-tests-dotnet.yml` | `Tests .NET (reusable)` | Restore + build + test de soluciones .NET, con exclusión de proyectos opcional. | `solution_path`, `working_directory`, `dotnet_version`, `configuration`, `excluded_projects` |
 | `_reusable-ci-front.yml` | `CI Front (reusable)` | Lint + test + build de fronts SPA (Bun), cada step togglable. | `working_directory`, `bun_version`, `run_lint`, `run_test`, `run_build`, `github_packages` |
-| `_reusable-terraform-plan.yml` | `Terraform plan (reusable)` | Ciclo `terraform plan` de los `*.Infraestructura`: job `validate` sin secretos (corre en todo PR, incl. Dependabot) + job `plan` autenticado (OIDC) que comenta el resultado en el PR. | `bounded_context`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `comment_on_pr` + `secrets: inherit` |
-| `_reusable-terraform-apply.yml` | `Terraform apply (reusable)` | `terraform apply` en `push` a main de los `*.Infraestructura` (OIDC + backend); `concurrency` no cancelable. | `bounded_context`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `apply_lock_timeout` + `secrets: inherit` |
+| `_reusable-terraform-plan.yml` | `Terraform plan (reusable)` | Ciclo `terraform plan` de los `*.Infraestructura`: job `validate` sin secretos (corre en todo PR, incl. Dependabot) + job `plan` autenticado (OIDC, GitHub Environment del caller) que comenta el resultado en el PR. | `bounded_context`, `environment`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `comment_on_pr` + `secrets: inherit` |
+| `_reusable-terraform-apply.yml` | `Terraform apply (reusable)` | `terraform apply` de los `*.Infraestructura` (OIDC + backend + GitHub Environment del caller); en prod exige gate de actor autorizado (team + `ACTOR_GATE_TOKEN`) y correr desde `main` por `workflow_dispatch`; `concurrency` por BC y ambiente, no cancelable. | `bounded_context`, `environment`, `authorized_actor_team`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `apply_lock_timeout` + `secrets: inherit` |
 
 > Ejemplo de Ruleset (en el repo consumidor): para hacer required el check de un PR que invoca `_reusable-dependency-review.yml`, el repo debe listar exactamente el string **`Dependency Review`** en `required_status_checks`. El mismo principio aplica para los demás reusables.
 
@@ -448,40 +448,67 @@ Ciclo `terraform plan` de los repos `*.Infraestructura`. Dos jobs: **`validate`*
 (`fmt -check` + `init -backend=false` + `validate`, **sin secretos ni Azure**, corre
 en todo PR incluido Dependabot) y **`plan`** (OIDC + backend azurerm + comentario en
 el PR, se saltea para PRs de Dependabot con `if: github.actor != 'dependabot[bot]'`).
-El backend se deriva del `bounded_context` (`rg-tfstate-<bc>-eus2-001` /
-`sttfstate<bc>eus2001` / `<bc>-dev.tfstate`). Los TF_VAR_* comunes se leen de `vars`/
-`secrets` del caller (que pasa `secrets: inherit`); los `front_<bc>_*` llegan en
-`extra_tf_vars_json`.
+El backend se deriva de `bounded_context` + `environment` (dev →
+`rg-tfstate-<bc>-eus2-001` / `sttfstate<bc>eus2001` / `<bc>-dev.tfstate`; prod →
+`rg-tfstate-<bc>-prod-eus2-001` / `sttfstate<bc>prodeus2001` / `<bc>-prod.tfstate`).
+El job `plan` declara `environment:` como **GitHub Environment del caller**
+(`vars`/`secrets` resuelven primero al Environment y caen a repo-level). Los
+TF_VAR_* comunes se leen de `vars`/`secrets` del caller (que pasa
+`secrets: inherit`); los por-BC llegan por la convención **`TFVAR_*`** (toda var
+del caller `TFVAR_<NOMBRE>` — org/repo/Environment — se exporta como
+`TF_VAR_<nombre>` y gana sobre `extra_tf_vars_json`, que queda como vía legada;
+valores multilínea y `TFVAR_ENVIRONMENT` se rechazan — `TF_VAR_environment` lo
+fija el input `environment`). Fail-closed: overrides `backend_*` con marcador
+`prod` exigen `environment=prod`; `environment` debe venir **en minúsculas**
+(el valor crudo viaja al subject OIDC y Entra lo matchea case-sensitive).
 
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|
 | `bounded_context` | string | **requerido** | BC corto (`cont`/`asis`/`impu`/`oxp`). Deriva el backend. |
+| `environment` | string | `dev` | Ambiente (`dev`/`prod`), **en minúsculas**. Deriva el backend, se declara como GitHub Environment del caller y se exporta como `TF_VAR_environment`. El comentario del plan usa marker por ambiente (dev conserva el histórico). |
 | `tf_version` | string | `1.9.8` | Versión de Terraform. |
 | `working_directory` | string | `infra` | Directorio de los `.tf`. |
-| `extra_tf_vars_json` | string (JSON) | `{}` | `{ "<tf_var>": "<valor>" }` **no sensible** (front vars). Se exporta como `TF_VAR_<key>`. |
+| `extra_tf_vars_json` | string (JSON) | `{}` | `{ "<tf_var>": "<valor>" }` **no sensible** (legado; preferir `TFVAR_*`, que gana). Se exporta como `TF_VAR_<key>`. |
 | `plan_lock_timeout` | string | `5m` | `-lock-timeout` del plan. |
 | `comment_on_pr` | boolean | `true` | Publica/actualiza el comentario del plan en el PR. |
 | `comment_max_chars` | number | `60000` | Trunca el comentario por encima de este largo. |
-| `backend_resource_group` / `_storage_account` / `_container` / `_key` | string | (deriva del BC) | Overrides del backend. |
+| `backend_resource_group` / `_storage_account` / `_container` / `_key` | string | (deriva de BC + env) | Overrides del backend. Con marcador `prod` exigen `environment=prod` (fail-closed). |
 
-Secrets (vía `secrets: inherit` del caller): `VM_ADMIN_PASSWORD`, `GH_RUNNER_PAT` y —solo OXP— `SINCOERP_PASSWORD`.
+Secrets (vía `secrets: inherit` del caller): `VM_ADMIN_PASSWORD`, `GH_RUNNER_PAT`, `SINCOERP_PASSWORD` (OXP/cont) y `FLAGSMITH_API_KEY` (cont); vacíos se omiten.
 
 ### `_reusable-terraform-apply.yml`
 
-`terraform apply` en `push` a main (post-merge) de los `*.Infraestructura`. Un job
-autenticado (OIDC + backend): `init` → `validate` → `plan` → `apply -auto-approve`.
-`concurrency: infra-apply-<bc>` con `cancel-in-progress: false` (nunca aborta un apply en curso).
+`terraform apply` de los `*.Infraestructura`: en dev corre en `push` a main
+(post-merge); en prod SOLO por `workflow_dispatch` del caller. Un job autenticado
+(OIDC + backend): `[gate]` → `init` → `validate` → `plan` → `apply -auto-approve`.
+`concurrency: infra-apply-<bc>-<environment>` con `cancel-in-progress: false`
+(nunca aborta un apply en curso). Backend, GitHub Environment, convención
+`TFVAR_*` y reglas fail-closed (`backend_*` con `prod` ⇒ `environment=prod`;
+`environment` en minúsculas): igual que en el plan.
+
+**Gate de actor (A5)**: con `authorized_actor_team` poblado, el apply valida vía
+API que `github.actor` — y en un re-run también `github.triggering_actor`, si
+difiere — sea miembro **activo** del team, antes de tocar Terraform. Invariantes
+prod (fail-closed): `environment=prod` ⇒ team obligatorio (su ausencia falla el
+job), apply solo desde `refs/heads/main` y solo por `workflow_dispatch` (un
+caller prod conectado a `push` es denegado: el apply prod es un acto deliberado,
+no un post-merge automático).
 
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|
 | `bounded_context` | string | **requerido** | BC corto. Deriva el backend. |
+| `environment` | string | `dev` | Ambiente (`dev`/`prod`), **en minúsculas**. Deriva el backend, GitHub Environment del caller y `TF_VAR_environment`; en prod activa el gate obligatorio. |
+| `authorized_actor_team` | string | `""` | Slug del team autorizado a aplicar. Vacío ⇒ sin gate SOLO fuera de prod. Requiere `ACTOR_GATE_TOKEN`. |
 | `tf_version` | string | `1.9.8` | Versión de Terraform. |
 | `working_directory` | string | `infra` | Directorio de los `.tf`. |
-| `extra_tf_vars_json` | string (JSON) | `{}` | Igual que en plan (front vars). |
+| `extra_tf_vars_json` | string (JSON) | `{}` | Igual que en plan (legado; preferir `TFVAR_*`). |
 | `apply_lock_timeout` | string | `10m` | `-lock-timeout` de plan y apply. |
-| `backend_resource_group` / `_storage_account` / `_container` / `_key` | string | (deriva del BC) | Overrides del backend. |
+| `backend_resource_group` / `_storage_account` / `_container` / `_key` | string | (deriva de BC + env) | Overrides del backend. Con marcador `prod` exigen `environment=prod` (fail-closed). |
 
-Secrets (vía `secrets: inherit` del caller): mismos que `_reusable-terraform-plan.yml`.
+Secrets (vía `secrets: inherit` del caller): mismos que
+`_reusable-terraform-plan.yml`, más `ACTOR_GATE_TOKEN` (obligatorio cuando el
+gate está activo: fine-grained PAT u token de App con `Organization members:
+Read`; el `GITHUB_TOKEN` del run NO sirve).
 
 ---
 
