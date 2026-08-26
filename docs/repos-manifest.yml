@@ -21,14 +21,6 @@
 
 repos:
 
-  - name: Cosmos.Buzon
-    stack: dotnet
-    consumes: [reusables, dependabot]
-    overrides:
-      docker_directories:
-        - /Cosmos.Buzon.Comandos.API
-        - /Cosmos.Buzon.Consultas.API
-
   # ── Borde de los MCP servers ────────────────────────────────────
   - name: Cosmos.MCPs.Infraestructura
     stack: terraform
@@ -315,6 +307,23 @@ repos:
     stack: dotnet
     consumes: [reusables, dependabot]
     # Dockerfiles a confirmar.
+
+  # Servicio Buzón de OxP. Sustituye al difunto `Cosmos.Buzon` (repo borrado
+  # ago-2026; el equipo reinició el servicio dentro del namespace de OxP).
+  - name: Cosmos.ObligacionesPorPagar.Buzon
+    stack: dotnet
+    consumes: [reusables, dependabot]
+    overrides:
+      docker_directories:
+        - /ObligacionesPorPagar.Buzon.Comandos.API
+        - /ObligacionesPorPagar.Buzon.Consultas.API
+
+  # Front del Buzón (SPA → Storage estático). Sin Dockerfile: no lleva
+  # override de docker_directories. Su dependabot.yml actual ya es copia
+  # manual del template node-bun y espera ser sobrescrito por el sync.
+  - name: Cosmos.ObligacionesPorPagar.Buzon.Front
+    stack: node-bun
+    consumes: [reusables, dependabot]
 
   # ── Terceros ────────────────────────────────────────────────────
   - name: Cosmos.Terceros
