@@ -187,7 +187,6 @@ jobs:
           # Comunes (vars/secrets del caller). Vacío → no se exporta el TF_VAR.
           V_OWNER: ${{ vars.OWNER }}
           V_COST_CENTER: ${{ vars.COST_CENTER }}
-          V_SSH_IPS: ${{ vars.SSH_ALLOWED_SOURCE_IPS }}
           V_VM_USER: ${{ vars.VM_ADMIN_USERNAME }}
           V_PG_USER: ${{ vars.POSTGRES_ADMIN_USERNAME }}
           S_VM_PASS: ${{ secrets.VM_ADMIN_PASSWORD }}
@@ -256,7 +255,6 @@ jobs:
           emit environment             "${ENVIRONMENT:-}"
           emit owner                   "${V_OWNER:-}"
           emit cost_center             "${V_COST_CENTER:-}"
-          emit ssh_allowed_source_ips  "${V_SSH_IPS:-}"
           emit vm_admin_username       "${V_VM_USER:-}"
           emit postgres_admin_username "${V_PG_USER:-}"
           emit vm_admin_password       "${S_VM_PASS:-}"
