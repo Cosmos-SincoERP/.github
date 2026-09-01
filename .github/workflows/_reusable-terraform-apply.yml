@@ -105,6 +105,9 @@ on:
       FLAGSMITH_API_KEY:
         description: "API key de Flagsmith (→ TF_VAR_flagsmith_api_key). Usado por cont; vacío y omitido en los BCs que no usan Flagsmith."
         required: false
+      POSTGRESQL_ADMIN_PASSWORD:
+        description: "Contraseña del admin de PostgreSQL Flexible (→ TF_VAR_postgresql_admin_password), en UNA sola línea (esta ruta no valida multilínea). Usado por cplane; vacío y omitido en los BCs sin PostgreSQL propio vía TF_VAR."
+        required: false
       ACTOR_GATE_TOKEN:
         description: |
           Token con permiso de lectura de members de la org (fine-grained PAT
@@ -250,6 +253,7 @@ jobs:
           S_RUNNER_PAT: ${{ secrets.GH_RUNNER_PAT }}
           S_SINCOERP: ${{ secrets.SINCOERP_PASSWORD }}
           S_FLAGSMITH: ${{ secrets.FLAGSMITH_API_KEY }}
+          S_PG_PASS: ${{ secrets.POSTGRESQL_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
 
@@ -316,6 +320,7 @@ jobs:
           emit github_runner_pat       "${S_RUNNER_PAT:-}"
           emit sincoerp_password       "${S_SINCOERP:-}"
           emit flagsmith_api_key       "${S_FLAGSMITH:-}"
+          emit postgresql_admin_password "${S_PG_PASS:-}"
 
           echo "$EXTRA_TF_VARS_JSON" \
             | jq -r 'to_entries[] | select(.value != "" and .value != null) | "TF_VAR_\(.key)=\(.value)"' \
