@@ -474,7 +474,7 @@ fija el input `environment`). Fail-closed: overrides `backend_*` con marcador
 | `comment_max_chars` | number | `60000` | Trunca el comentario por encima de este largo. |
 | `backend_resource_group` / `_storage_account` / `_container` / `_key` | string | (deriva de BC + env) | Overrides del backend. Con marcador `prod` exigen `environment=prod` (fail-closed). |
 
-Secrets (vía `secrets: inherit` del caller): `VM_ADMIN_PASSWORD`, `GH_RUNNER_PAT`, `SINCOERP_PASSWORD` (OXP/cont) y `FLAGSMITH_API_KEY` (cont); vacíos se omiten.
+Secrets (vía `secrets: inherit` del caller): `VM_ADMIN_PASSWORD`, `GH_RUNNER_PAT`, `SINCOERP_PASSWORD` (OXP/cont), `FLAGSMITH_API_KEY` (cont) y `POSTGRESQL_ADMIN_PASSWORD` (cplane; **una sola línea** — la ruta `emit` no valida multilínea, a diferencia de `TFVAR_*`); vacíos se omiten.
 
 ### `_reusable-terraform-apply.yml`
 
