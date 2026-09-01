@@ -13,13 +13,15 @@ concurrency:
 #     plane en un único Storage Account compartido (`stfrontappldeveus2001`).
 #   - env.js (config runtime) generado desde KV y subido a $web/<app_name>/env.js
 #     con no-cache.
-#   - Archivos de contrato (opcional, input `app_base_files`): copia server-side
+#   - Archivos de contrato (opcional, input `app_base_files`): upload directo
 #     de los archivos del bundle que otra app descubre por URL fija sin SHA (ej.
 #     intenciones.json / remoteEntry.js del asistente) a $web/<app_name>/<archivo>
 #     con no-cache. Sin el input → no-op.
-#   - Activación atómica: copia server-side de <app_name>/releases/<sha>/index.html
-#     a $web/<app_name>/index.html (los usuarios ven la nueva versión en la
-#     siguiente request, sin estado intermedio).
+#   - Activación atómica: upload directo de dist/index.html (los mismos bytes
+#     que releases/<sha>/index.html) a $web/<app_name>/index.html con no-cache
+#     en la MISMA operación de escritura (los usuarios ven la nueva versión en
+#     la siguiente request, sin estado intermedio ni ventana con Cache-Control
+#     heredado del release — ver comentario del step de activación).
 #   - Smoke test contra el web_endpoint que pasa el caller (ya incluye `/<app_name>/`).
 #
 # Plantilla del env.js: vive en el repo del **front** en `.deploy/env.js.tmpl`.
@@ -40,7 +42,7 @@ concurrency:
 #   - `deploy` corre en `[self-hosted, azure, swarm-deploy]` porque la
 #     única razón de exigir self-hosted es la Managed Identity de la VM
 #     (data plane Azure: KV + Storage). Descarga el artefacto del build,
-#     hace `az login --identity` y ejecuta los pasos de upload + swap.
+#     hace `az login --identity` y ejecuta los pasos de upload + activación.
 # Esta separación deja al self-hosted con un único requisito (`az` CLI,
 # que ya está vía Radicacion); no necesita Bun, unzip, envsubst, ni node.
 #
@@ -414,14 +416,13 @@ jobs:
         # publicamos en la raíz del front (`$web/<app_name>/<archivo>`) con
         # `no-cache` — mismo tratamiento que `env.js`. El bundle versionado
         # conserva su copia inmutable; esta es la copia estable y mutable. Step
-        # idéntico en mecánica al swap de index.html (copy server-side + poll +
-        # update de content-settings), iterado sobre la lista.
+        # idéntico en mecánica a la activación de index.html (upload directo
+        # con las propiedades finales), iterado sobre la lista.
         if: inputs.app_base_files != ''
         shell: bash
         env:
           STORAGE: ${{ inputs.storage_account_name }}
           APP: ${{ inputs.app_name }}
-          SHA: ${{ github.sha }}
           APP_BASE_FILES: ${{ inputs.app_base_files }}
         run: |
           set -euo pipefail
@@ -438,9 +439,8 @@ jobs:
                 exit 1 ;;
             esac
 
-            # Content-Type por extensión: `az storage blob update` REEMPLAZA todo
-            # el content-settings, así que hay que re-setear el tipo junto con el
-            # cache-control (mismo motivo que el swap de index.html). Extensión
+            # Content-Type por extensión: el upload fija todo el content-settings,
+            # así que el tipo se declara junto con el cache-control. Extensión
             # desconocida → octet-stream (el consumidor decide).
             case "$f" in
               *.json)     ct="application/json; charset=utf-8" ;;
@@ -453,55 +453,33 @@ jobs:
 
             echo "Publicando contrato '$f' → \$web/$APP/$f (Content-Type: $ct)"
 
-            # Copy server-side desde el release inmutable a la raíz del front.
-            # Sobrescribe la copia anterior (cada deploy la refresca). Si el
-            # archivo no existe en el release, `copy start` falla → el job falla
-            # (fail-fast: un contrato declarado que falta es un error real).
+            # Upload directo desde el bundle del artefacto (los mismos bytes que
+            # `releases/<sha>/$f`: ambos salen del `dist/` de este run) con las
+            # propiedades finales (no-cache) en la MISMA operación de escritura.
+            # `--overwrite true` reemplaza el blob atómicamente: el consumidor ve
+            # la copia vieja o la nueva, nunca un intermedio. Si el archivo no
+            # existe en dist/, el upload falla → el job falla (fail-fast: un
+            # contrato declarado que falta es un error real).
+            #
+            # NO usar copy server-side + `blob update` posterior: la copia
+            # preserva el Cache-Control `immutable` del release y entre el copy
+            # y el update queda una ventana de segundos en la que un CDN (Front
+            # Door) puede cachear el contrato viejo por 1 año (incidente oxpnew
+            # 2026-08-31 → 2026-09-01).
             # shellcheck disable=SC2016
-            az storage blob copy start \
-              --account-name "$STORAGE" \
-              --auth-mode login \
-              --source-container '$web' \
-              --source-blob "$APP/releases/$SHA/$f" \
-              --destination-container '$web' \
-              --destination-blob "$APP/$f" \
-              --output none
-
-            # Poll de la copia (async; el `update` siguiente fallaría si aún está
-            # pending). Tope 30s — archivos de contrato chicos.
-            status=""
-            for _ in $(seq 1 30); do
-              # shellcheck disable=SC2016
-              status=$(az storage blob show \
-                --account-name "$STORAGE" --auth-mode login \
-                --container-name '$web' --name "$APP/$f" \
-                --query 'properties.copy.status' -o tsv)
-              case "$status" in
-                success) break ;;
-                pending) sleep 1 ;;
-                *) echo "::error::Copia de '$f' en estado inesperado: $status"; exit 1 ;;
-              esac
-            done
-            if [[ "$status" != "success" ]]; then
-              echo "::error::La copia de '$f' no completó en 30s (último estado: $status)."
-              exit 1
-            fi
-
-            # `az storage blob copy` preserva las propiedades de origen (acá
-            # Cache-Control: immutable). Lo sobrescribimos a no-cache para que el
-            # consumidor externo siempre revalide y vea el último deploy.
-            # shellcheck disable=SC2016
-            az storage blob update \
+            az storage blob upload \
               --account-name "$STORAGE" \
               --auth-mode login \
               --container-name '$web' \
               --name "$APP/$f" \
+              --file "dist/$f" \
               --content-cache-control "no-cache" \
               --content-type "$ct" \
-              --output none
+              --overwrite true \
+              --no-progress
           done
 
-      - name: Activación atómica — swap de index.html
+      - name: Activación atómica — publicación de index.html
         shell: bash
         env:
           STORAGE: ${{ inputs.storage_account_name }}
@@ -509,56 +487,33 @@ jobs:
           set -euo pipefail
 
           # `'$web'` con comillas simples es el nombre literal del contenedor
-          # de static website (Azure usa `$` en el nombre). Aplica a todos
-          # los `az storage blob ...` de este step.
+          # de static website (Azure usa `$` en el nombre).
 
-          # Copy server-side dentro del mismo Storage Account: el cliente que
-          # pida `/<app_name>/` o `/<app_name>/index.html` ve la versión vieja
-          # o la nueva, nunca un estado intermedio.
+          # Upload directo del index del bundle (los mismos bytes que
+          # `releases/<sha>/index.html`: ambos salen del `dist/` de este run)
+          # con las propiedades finales (no-cache) en la MISMA operación de
+          # escritura. El blob se reemplaza atómicamente: el cliente que pida
+          # `/<app_name>/` ve la versión vieja o la nueva, nunca un estado
+          # intermedio. Este es el switch que activa cada release.
+          #
+          # NO usar copy server-side + `blob update` posterior: la copia
+          # preserva el Cache-Control `immutable` del release, y entre el copy
+          # y el update queda una ventana de segundos en la que el index raíz
+          # se sirve con `max-age=31536000, immutable` — una petición vía
+          # Front Door en esa ventana deja el index viejo cacheado en el edge
+          # por 1 año (incidente oxpnew: envenenado el 2026-08-31 15:51Z,
+          # purgado a mano el 2026-09-01).
           # shellcheck disable=SC2016
-          az storage blob copy start \
-            --account-name "$STORAGE" \
-            --auth-mode login \
-            --source-container '$web' \
-            --source-blob "${{ inputs.app_name }}/releases/${{ github.sha }}/index.html" \
-            --destination-container '$web' \
-            --destination-blob '${{ inputs.app_name }}/index.html' \
-            --output none
-
-          # Poll de la copia (típicamente sub-segundo intra-account, pero el
-          # API es async y el `update` siguiente fallaría si la copia aún
-          # está pending). Tope de 30s, suficiente para un index.html chico.
-          status=""
-          for _ in $(seq 1 30); do
-            # shellcheck disable=SC2016
-            status=$(az storage blob show \
-              --account-name "$STORAGE" --auth-mode login \
-              --container-name '$web' --name '${{ inputs.app_name }}/index.html' \
-              --query 'properties.copy.status' -o tsv)
-            case "$status" in
-              success) break ;;
-              pending) sleep 1 ;;
-              *) echo "::error::Copia de index.html en estado inesperado: $status"; exit 1 ;;
-            esac
-          done
-          if [[ "$status" != "success" ]]; then
-            echo "::error::La copia de index.html no completó en 30s (último estado: $status)."
-            exit 1
-          fi
-
-          # `az storage blob copy` preserva las propiedades de origen (en este
-          # caso Cache-Control: immutable). Lo sobrescribimos para que la
-          # entrada del front nunca se cachee — es el switch que activa cada
-          # release.
-          # shellcheck disable=SC2016
-          az storage blob update \
+          az storage blob upload \
             --account-name "$STORAGE" \
             --auth-mode login \
             --container-name '$web' \
             --name '${{ inputs.app_name }}/index.html' \
+            --file dist/index.html \
             --content-cache-control "no-cache" \
             --content-type "text/html; charset=utf-8" \
-            --output none
+            --overwrite true \
+            --no-progress
 
       - name: Smoke test
         shell: bash
