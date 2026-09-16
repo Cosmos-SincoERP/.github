@@ -21,14 +21,6 @@
 
 repos:
 
-  # ── Borde de los MCP servers ────────────────────────────────────
-  - name: Cosmos.MCPs.Infraestructura
-    stack: terraform
-    consumes: [reusables, dependabot]
-    overrides:
-      terraform_directory: /infra
-      # Sin Dockerfiles: solo IaC (APIM que rutea los MCPs con salida a internet).
-
   # creado por create-repo (baseline)
   - name: Cosmos.MCPERP
     stack: github-actions
