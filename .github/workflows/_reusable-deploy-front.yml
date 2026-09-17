@@ -33,6 +33,18 @@ concurrency:
 # var a un secret con nombre custom (ej. uno compartido entre fronts).
 # Una vez generado, se valida con `node --check` (si hay Node disponible).
 #
+# Fuente alternativa — variables de GitHub (`vars`): si un placeholder
+# `${VAR_NAME}` existe como variable de configuración visible para el caller
+# (Environment `inputs.environment` del repo del front, repo u org; GitHub
+# aplica la precedencia environment > repo > org), su valor **gana** sobre el
+# secret de KV y el KV no se consulta para ese placeholder. El log indica la
+# fuente de cada placeholder, nunca el valor. El valor de `vars` se valida
+# fail-closed: vacío o con `"` `\` `&` `$` backtick o salto de línea → error
+# (el runner prod no tiene node para validar el env.js resultante).
+# ⚠️ REGLA: ninguna variable de org ni de repo puede llamarse como un
+# placeholder de un front salvo que se quiera que gane al KV en ese front
+# (en el caso de org: en TODOS los fronts que usen ese placeholder).
+#
 # Estructura: split en dos jobs por capacidad del runner.
 #   - `build` corre en `ubuntu-latest` (GitHub-hosted) porque setup-bun
 #     necesita `unzip` y otras herramientas de imagen full que la VM del
@@ -44,7 +56,8 @@ concurrency:
 #     (data plane Azure: KV + Storage). Descarga el artefacto del build,
 #     hace `az login --identity` y ejecuta los pasos de upload + activación.
 # Esta separación deja al self-hosted con un único requisito (`az` CLI,
-# que ya está vía Radicacion); no necesita Bun, unzip, envsubst, ni node.
+# que ya está vía Radicacion) más `jq` (lo instala el cloud-init de las VMs
+# de cada BC) para leer `vars`; no necesita Bun, unzip, envsubst, ni node.
 #
 # Auth: Managed Identity del runner self-hosted (label `swarm-deploy`).
 # Primer step del job `deploy`: `az login --identity`. La MI del runner debe tener:
@@ -70,7 +83,7 @@ on:
         type: string
         required: true
       environment:
-        description: "Ambiente lógico (dev, qa, prod). Solo usado para etiquetas/diagnóstico — el ambiente real lo determina la SA y el KV."
+        description: "Ambiente lógico (dev, qa, prod). Es además el GitHub Environment del repo caller que declara el job `deploy` (sus variables alimentan el env.js; GitHub lo crea vacío si no existe). La SA y el KV siguen siendo los del caller."
         type: string
         required: true
       storage_account_name:
@@ -250,6 +263,10 @@ jobs:
   deploy:
     name: Deploy ${{ inputs.app_name }} (${{ inputs.environment }})
     needs: build
+    # Environment del repo caller: expone sus variables en `vars` (step
+    # «Generar env.js»). Sin reglas de protección en los fronts; el control de
+    # prod sigue siendo el gate de actor del caller (A5).
+    environment: ${{ inputs.environment }}
     # Self-hosted con MI: necesario sólo para los pasos `az` que tocan
     # KV y Storage. NO corre Bun ni hace builds — sólo data plane Azure.
     runs-on:
@@ -303,13 +320,16 @@ jobs:
             --overwrite false \
             --no-progress
 
-      - name: Generar env.js desde Key Vault (template del front + convención)
+      - name: Generar env.js desde vars / Key Vault (template del front + convención)
         shell: bash
         env:
           KV: ${{ inputs.key_vault_name }}
           APP: ${{ inputs.app_name }}
           TEMPLATE: .deploy/env.js.tmpl
           MAP: .deploy/env.map
+          # Variables de configuración visibles para el caller (org + repo +
+          # Environment, con la precedencia de GitHub). No son secretos.
+          GH_VARS: ${{ toJSON(vars) }}
         run: |
           set -euo pipefail
 
@@ -350,9 +370,44 @@ jobs:
           # Usa `${var//pattern/replacement}`, que es match literal (no glob
           # porque los placeholders no contienen `*`/`?`/`[`) y replacement
           # literal (no re-expande `$` del valor). Ventaja sobre envsubst:
-          # cero dependencias del runner además de bash + az.
+          # dependencias del runner: bash + az, más jq para la fuente `vars`.
+          # Fuente `vars`: jq es obligatorio para leerla. Sin jq, un placeholder
+          # que aparezca como clave en GH_VARS aborta (fail-closed) en vez de
+          # caer en silencio al KV.
+          # Sin ninguna var visible, toJSON(vars) es `null` (mismo guard que
+          # `_reusable-terraform-plan.yml`): se trata como objeto vacío.
+          GH_VARS="${GH_VARS:-null}"
+          HAS_JQ=0
+          if command -v jq >/dev/null 2>&1; then
+            HAS_JQ=1
+            jq -e 'type == "object" or type == "null"' >/dev/null <<<"$GH_VARS" \
+              || { echo "::error::GH_VARS no es un objeto JSON."; exit 1; }
+          fi
+
           RESULT=$(<"$TEMPLATE")
           for var in "${VARS[@]}"; do
+            if [[ "$HAS_JQ" -eq 1 ]]; then
+              in_vars=$(jq -r --arg k "$var" \
+                '[(. // {}) | to_entries[] | select((.key | ascii_upcase) == $k)] | length' <<<"$GH_VARS")
+            elif grep -q "\"$var\"[[:space:]]*:" <<<"$GH_VARS"; then
+              echo "::error::$var parece definido en vars pero el runner no tiene jq para leerlo."
+              exit 1
+            else
+              in_vars=0
+            fi
+
+            if [[ "$in_vars" -gt 0 ]]; then
+              value=$(jq -r --arg k "$var" \
+                '[(. // {}) | to_entries[] | select((.key | ascii_upcase) == $k)][0].value' <<<"$GH_VARS")
+              if [[ -z "$value" || "$value" == *[\"\\\&\$\`]* || "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+                echo "::error::$var (vars) vacío o con caracteres no permitidos (\" \\ & \$ \` salto de línea)."
+                exit 1
+              fi
+              echo "  $var ← vars (Environment/repo/org)"
+              RESULT="${RESULT//\$\{$var\}/$value}"
+              continue
+            fi
+
             if [[ -n "${OVERRIDE[$var]:-}" ]]; then
               secret_name="${OVERRIDE[$var]}"
               echo "  $var → $secret_name (override)"

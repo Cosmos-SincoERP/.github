@@ -190,7 +190,7 @@ Build + test + deploy de un SPA al Storage Account static website. Sigue el patr
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|
 | `app_name` | string | **requerido** | Identificador corto (2-8 chars). Se usa para derivar el nombre de los secrets en KV (`front-<app>-...`). |
-| `environment` | string | **requerido** | Etiqueta lógica del ambiente (dev/qa/prod). Solo informativa. |
+| `environment` | string | **requerido** | Ambiente lógico (dev/qa/prod). Es además el **GitHub Environment del caller** que declara el job `deploy`: sus variables alimentan el `env.js` (ver «Fuente `vars`»). GitHub lo crea vacío si no existe. |
 | `storage_account_name` | string | **requerido** | SA compartido de fronts del plane: `stfrontappldeveus2001` (RG `rg-appl-dev-eus2-001`, infra de ApplicationPlane). |
 | `web_endpoint` | string | **requerido** | URL del web endpoint con el prefijo del front (`https://stfrontappldeveus2001.z20.web.core.windows.net/<app_name>/`). Usado para smoke test. |
 | `key_vault_name` | string | **requerido** | KV con los secretos de configuración del `env.js` (ej. `kv-oxp-dev-eus2-001`). |
@@ -206,8 +206,9 @@ Build + test + deploy de un SPA al Storage Account static website. Sigue el patr
 |---|---|
 | **Convención de naming** | `${VAR_NAME}` → `front-<app_name>-var-name` (lowercase, `_` → `-`). Ej: `${API_BASE_URL}` con `app_name: oxp` → `front-oxp-api-base-url`. |
 | **Escape hatch** | Archivo opcional `<working_directory>/.deploy/env.map` con `VAR=secret-name` por línea (soporta `#` comentarios). Permite mapear una var a un nombre de secret distinto del que daría la convención (ej. para reusar un secret compartido entre varios fronts). |
+| **Fuente `vars`** | Si un placeholder `${VAR_NAME}` existe como variable de configuración visible al caller (Environment `environment` del repo del front, repo u org, con la precedencia de GitHub), su valor **gana** sobre el KV y el secret no se consulta. El log muestra la fuente de cada placeholder (`← vars` / `→ <secret>`), nunca el valor. Requiere `jq` en el runner; sin `jq`, un placeholder presente en `vars` aborta. ⚠️ Ninguna variable de org o de repo debe llamarse como un placeholder salvo que se quiera ese efecto (en org, afecta a todos los fronts). |
 | **Validación de sintaxis** | Si `node` está disponible en el runner, corre `node --check env.js` después del envsubst. Atrapa típos del template (ej. un valor no numérico que rompe un literal sin comillas). |
-| **Failure modes** | Sin `.deploy/env.js.tmpl` → falla con mensaje claro. Secret no existe en KV → falla en el `az keyvault secret show`. Sintaxis inválida → falla en `node --check`. |
+| **Failure modes** | Sin `.deploy/env.js.tmpl` → falla con mensaje claro. Secret no existe en KV → falla en el `az keyvault secret show`. Valor de `vars` vacío o con `"` `\` `&` `$` backtick o salto de línea → falla (fail-closed; el runner prod no tiene `node`). Placeholder en `vars` sin `jq` en el runner → falla. Sintaxis inválida → falla en `node --check`. |
 
 **Roles RBAC requeridos sobre la MI de la VM** (`module.vm.identity_principal_id`):
 
