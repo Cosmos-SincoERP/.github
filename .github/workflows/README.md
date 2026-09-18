@@ -59,7 +59,7 @@ Mantener estos nombres estables es contrato público: cambiarlos rompe los Rules
 | `_reusable-bump-and-tag.yml` | `Bump SemVer + tag (reusable)` | Calcula siguiente SemVer consultando nuget.org, crea y empuja tag git, opcionalmente abre GitHub Release. | `package_id`, `tag_prefix`, `bump_type`, `initial_version`, `create_github_release` |
 | `_reusable-cleanup-acr-pr.yml` | `Cleanup ACR — tags de PR (reusable)` | Borra tags `pr-*` huérfanos en ACR (modo dirigido por PR cerrado, o barrido por edad). | `acr_name`, `repository_prefix`, `repositories_json`, `pr_number`, `keep_sha7` |
 | `_reusable-dependency-review.yml` | `Dependency Review` | Bloquea PRs que introducen dependencias vulnerables o con licencias prohibidas (ADR 0002 E.4). | `fail-on-severity`, `deny-licenses` |
-| `_reusable-deploy-front.yml` | `Deploy Front estático (reusable)` | Despliega SPA Bun a Storage Account `$web` con activación atómica y env.js generado desde Key Vault. | `app_name`, `web_endpoint`, `storage_account`, `key_vault_name`, `environment`, `github_packages`, `app_base_files` |
+| `_reusable-deploy-front.yml` | `Deploy Front estático (reusable)` | Despliega SPA Bun a Storage Account `$web` con activación atómica y env.js generado desde Key Vault. | `app_name`, `web_endpoint`, `storage_account`, `key_vault_name`, `environment`, `github_packages`, `run_test`, `app_base_files` |
 | `_reusable-deploy-swarm.yml` | `Deploy a Docker Swarm (reusable)` | Despliega un stack Compose a un Docker Swarm self-hosted inyectando tags por servicio. | `stack_file`, `stack_name`, `image_tag`, `image_tags_json`, `acr_name`, `stack_environment` |
 | `_reusable-docker-build-push.yml` | `Build & Push Docker (reusable)` | Build multi-imagen contra ACR con alias mutables derivados del contexto (PR / main / manual). | `images_json`, `acr_name`, `repository_prefix`, `ref_context_override`, `mutable_alias_override` |
 | `_reusable-nuget-publish.yml` | `NuGet publish (reusable)` | Empaqueta un `.csproj` y publica al feed NuGet configurado (default nuget.org). | `project_path`, `package_version`, `dotnet_version`, `nuget_source` + secret `NUGET_API_KEY` |
@@ -68,8 +68,8 @@ Mantener estos nombres estables es contrato público: cambiarlos rompe los Rules
 | `_reusable-secret-scan.yml` | `Secret Scan (gitleaks)` | Mitigación open-source de secret scanning (gitleaks) para repos privados sin GHAS (ADR 0002 E.6). | `config-path` |
 | `_reusable-tests-dotnet.yml` | `Tests .NET (reusable)` | Restore + build + test de soluciones .NET, con exclusión de proyectos opcional. | `solution_path`, `working_directory`, `dotnet_version`, `configuration`, `excluded_projects` |
 | `_reusable-ci-front.yml` | `CI Front (reusable)` | Lint + test + build de fronts SPA (Bun), cada step togglable. | `working_directory`, `bun_version`, `run_lint`, `run_test`, `run_build`, `github_packages` |
-| `_reusable-terraform-plan.yml` | `Terraform plan (reusable)` | Ciclo `terraform plan` de los `*.Infraestructura`: job `validate` sin secretos (corre en todo PR, incl. Dependabot) + job `plan` autenticado (OIDC) que comenta el resultado en el PR. | `bounded_context`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `comment_on_pr` + `secrets: inherit` |
-| `_reusable-terraform-apply.yml` | `Terraform apply (reusable)` | `terraform apply` en `push` a main de los `*.Infraestructura` (OIDC + backend); `concurrency` no cancelable. | `bounded_context`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `apply_lock_timeout` + `secrets: inherit` |
+| `_reusable-terraform-plan.yml` | `Terraform plan (reusable)` | Ciclo `terraform plan` de los `*.Infraestructura`: job `validate` sin secretos (corre en todo PR, incl. Dependabot) + job `plan` autenticado (OIDC, GitHub Environment del caller) que comenta el resultado en el PR. | `bounded_context`, `environment`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `comment_on_pr` + `secrets: inherit` |
+| `_reusable-terraform-apply.yml` | `Terraform apply (reusable)` | `terraform apply` de los `*.Infraestructura` (OIDC + backend + GitHub Environment del caller); en prod exige gate de actor autorizado (team + `ACTOR_GATE_TOKEN`) y correr desde `main` por `workflow_dispatch`; `concurrency` por BC y ambiente, no cancelable. | `bounded_context`, `environment`, `authorized_actor_team`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `apply_lock_timeout` + `secrets: inherit` |
 
 > Ejemplo de Ruleset (en el repo consumidor): para hacer required el check de un PR que invoca `_reusable-dependency-review.yml`, el repo debe listar exactamente el string **`Dependency Review`** en `required_status_checks`. El mismo principio aplica para los demás reusables.
 
@@ -190,13 +190,14 @@ Build + test + deploy de un SPA al Storage Account static website. Sigue el patr
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|
 | `app_name` | string | **requerido** | Identificador corto (2-8 chars). Se usa para derivar el nombre de los secrets en KV (`front-<app>-...`). |
-| `environment` | string | **requerido** | Etiqueta lógica del ambiente (dev/qa/prod). Solo informativa. |
+| `environment` | string | **requerido** | Ambiente lógico (dev/qa/prod). Es además el **GitHub Environment del caller** que declara el job `deploy`: sus variables alimentan el `env.js` (ver «Fuente `vars`»). GitHub lo crea vacío si no existe. |
 | `storage_account_name` | string | **requerido** | SA compartido de fronts del plane: `stfrontappldeveus2001` (RG `rg-appl-dev-eus2-001`, infra de ApplicationPlane). |
 | `web_endpoint` | string | **requerido** | URL del web endpoint con el prefijo del front (`https://stfrontappldeveus2001.z20.web.core.windows.net/<app_name>/`). Usado para smoke test. |
 | `key_vault_name` | string | **requerido** | KV con los secretos de configuración del `env.js` (ej. `kv-oxp-dev-eus2-001`). |
 | `bun_version` | string | `latest` | Versión de Bun a instalar. |
 | `working_directory` | string | `.` | Directorio donde está `package.json` (y, debajo de él, `.deploy/env.js.tmpl`). |
 | `github_packages` | boolean | `false` | Si el front consume paquetes del org desde GitHub Packages. En `true`, el job `build` escribe un `.npmrc` autenticado con el `GITHUB_TOKEN` antes de `bun install` (el reusable declara `packages: read`). En `false`, sin cambios. |
+| `run_test` | boolean | `true` | Ejecutar `bun run test` en el job `build`. Ponerlo en `false` cuando la rama de deploy ya está gateada por un required check de CI que corre la suite completa (el Test del deploy sería redundante) o cuando la suite no cabe en el `timeout-minutes: 10` del job `build`. Default `true` → sin cambios para los fronts existentes. |
 | `app_base_files` | string | `""` | Lista separada por espacios de archivos del bundle a publicar también en la **raíz estable del front** (`$web/<app_name>/<archivo>`) con `no-cache`, además de su copia inmutable bajo `releases/<sha>/`. Para **archivos de contrato de descubrimiento** que otra app consume por URL fija sin SHA (ej. `intenciones.json` + `remoteEntry.js` del asistente transversal). Vacío → no-op. Rutas relativas a `dist/`; sin ruta absoluta ni `..`. |
 
 **Plantilla del `env.js`: propiedad de cada front**, en `<working_directory>/.deploy/env.js.tmpl` del repo del front. El reusable es **agnóstico al shape** del template: extrae los placeholders `${VAR_NAME}` con grep, deriva el nombre del secret en KV por convención y resuelve con `envsubst`.
@@ -205,8 +206,9 @@ Build + test + deploy de un SPA al Storage Account static website. Sigue el patr
 |---|---|
 | **Convención de naming** | `${VAR_NAME}` → `front-<app_name>-var-name` (lowercase, `_` → `-`). Ej: `${API_BASE_URL}` con `app_name: oxp` → `front-oxp-api-base-url`. |
 | **Escape hatch** | Archivo opcional `<working_directory>/.deploy/env.map` con `VAR=secret-name` por línea (soporta `#` comentarios). Permite mapear una var a un nombre de secret distinto del que daría la convención (ej. para reusar un secret compartido entre varios fronts). |
+| **Fuente `vars`** | Si un placeholder `${VAR_NAME}` existe como variable de configuración visible al caller (Environment `environment` del repo del front, repo u org, con la precedencia de GitHub), su valor **gana** sobre el KV y el secret no se consulta. El log muestra la fuente de cada placeholder (`← vars` / `→ <secret>`), nunca el valor. Requiere `jq` en el runner; sin `jq`, un placeholder presente en `vars` aborta. ⚠️ Ninguna variable de org o de repo debe llamarse como un placeholder salvo que se quiera ese efecto (en org, afecta a todos los fronts). |
 | **Validación de sintaxis** | Si `node` está disponible en el runner, corre `node --check env.js` después del envsubst. Atrapa típos del template (ej. un valor no numérico que rompe un literal sin comillas). |
-| **Failure modes** | Sin `.deploy/env.js.tmpl` → falla con mensaje claro. Secret no existe en KV → falla en el `az keyvault secret show`. Sintaxis inválida → falla en `node --check`. |
+| **Failure modes** | Sin `.deploy/env.js.tmpl` → falla con mensaje claro. Secret no existe en KV → falla en el `az keyvault secret show`. Valor de `vars` vacío o con `"` `\` `&` `$` backtick o salto de línea → falla (fail-closed; el runner prod no tiene `node`). Placeholder en `vars` sin `jq` en el runner → falla. Sintaxis inválida → falla en `node --check`. |
 
 **Roles RBAC requeridos sobre la MI de la VM** (`module.vm.identity_principal_id`):
 
@@ -426,10 +428,16 @@ jobs:
 
 ### `_reusable-cleanup-acr-pr.yml`
 
-Borra tags `pr-*` del ACR. Dos modos:
+Quita tags `pr-*` del ACR. Dos modos:
 
-- **Dirigido** (`pr_number` provisto): borra `pr-{N}` y `pr-{N}-*` en cada repo. El caller (workflow `pull_request: closed`) ya sabe que el PR cerró. Combinado con `keep_sha7`, se usa también para **cleanup intra-PR** desde el wrapper `pr-imagen-docker.yml`: cada push borra los `pr-{N}-{shaPrev}` obsoletos preservando el alias y el SHA recién publicado.
-- **Barrido** (sin `pr_number`): consulta vía `gh pr view` el estado de cada PR y borra los cerrados hace más de `min_age_days`.
+- **Dirigido** (`pr_number` provisto): quita `pr-{N}` y `pr-{N}-*` en cada repo. El caller (workflow `pull_request: closed`) ya sabe que el PR cerró. Combinado con `keep_sha7`, se usa también para **cleanup intra-PR** desde el wrapper `pr-imagen-docker.yml`: cada push borra los `pr-{N}-{shaPrev}` obsoletos preservando el alias y el SHA recién publicado.
+- **Barrido** (sin `pr_number`): consulta el estado de cada PR contra la API de GitHub y quita los cerrados hace más de `min_age_days`. Además purga los manifests huérfanos (ver abajo).
+
+**Retención garantizada.** Sobre ambos modos rige un piso que ninguna otra regla levanta: cada repositorio conserva su **última imagen `pr-*`** y sus **3 últimas `main-*`** (con sus alias mutables `pr-{N}` y `main-latest`, que apuntan al mismo manifest). El skip se evalúa antes que `keep_sha7` y antes de consultar el estado del PR, y una aserción al final del job falla el run si la garantía no se cumplió. Consecuencia buscada: al cerrar un PR sin merge, si su `pr-{N}-{sha7}` es el más reciente del repositorio, se conserva hasta que otro PR lo reemplace.
+
+**Borra por tag, no por manifest.** Usa `az acr repository untag`, no `az acr repository delete --image repo:tag` — este último borra el manifest y **todos** los tags que lo referencian. Importa porque el promote a main re-taguea el mismo manifest (`docker pull pr-{N}-{sha7}` → `docker push main-{X}`): borrar por manifest se llevaba en cascada el `main-{X}` que el deploy tenía vivo.
+
+**Purga de huérfanos.** Como `untag` no libera bytes, el modo barrido borra por digest los manifests que llevan más de **30 días** sin ningún tag **y** que ningún manifest etiquetado referencia. Esa segunda condición no es opcional: las imágenes se publican como índices OCI multi-plataforma, y los manifests hijos del índice no llevan tag propio — un filtro por `tags == null` los vería como huérfanos y purgarlos rompería el `main-<sha7>` que el índice etiqueta. El margen de 30 días cubre además el caso en que un digest importa por sí mismo: Swarm lo fija al desplegar y lo reusa si una tarea necesita re-pull.
 
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|
@@ -447,40 +455,67 @@ Ciclo `terraform plan` de los repos `*.Infraestructura`. Dos jobs: **`validate`*
 (`fmt -check` + `init -backend=false` + `validate`, **sin secretos ni Azure**, corre
 en todo PR incluido Dependabot) y **`plan`** (OIDC + backend azurerm + comentario en
 el PR, se saltea para PRs de Dependabot con `if: github.actor != 'dependabot[bot]'`).
-El backend se deriva del `bounded_context` (`rg-tfstate-<bc>-eus2-001` /
-`sttfstate<bc>eus2001` / `<bc>-dev.tfstate`). Los TF_VAR_* comunes se leen de `vars`/
-`secrets` del caller (que pasa `secrets: inherit`); los `front_<bc>_*` llegan en
-`extra_tf_vars_json`.
+El backend se deriva de `bounded_context` + `environment` (dev →
+`rg-tfstate-<bc>-eus2-001` / `sttfstate<bc>eus2001` / `<bc>-dev.tfstate`; prod →
+`rg-tfstate-<bc>-prod-eus2-001` / `sttfstate<bc>prodeus2001` / `<bc>-prod.tfstate`).
+El job `plan` declara `environment:` como **GitHub Environment del caller**
+(`vars`/`secrets` resuelven primero al Environment y caen a repo-level). Los
+TF_VAR_* comunes se leen de `vars`/`secrets` del caller (que pasa
+`secrets: inherit`); los por-BC llegan por la convención **`TFVAR_*`** (toda var
+del caller `TFVAR_<NOMBRE>` — org/repo/Environment — se exporta como
+`TF_VAR_<nombre>` y gana sobre `extra_tf_vars_json`, que queda como vía legada;
+valores multilínea y `TFVAR_ENVIRONMENT` se rechazan — `TF_VAR_environment` lo
+fija el input `environment`). Fail-closed: overrides `backend_*` con marcador
+`prod` exigen `environment=prod`; `environment` debe venir **en minúsculas**
+(el valor crudo viaja al subject OIDC y Entra lo matchea case-sensitive).
 
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|
 | `bounded_context` | string | **requerido** | BC corto (`cont`/`asis`/`impu`/`oxp`). Deriva el backend. |
+| `environment` | string | `dev` | Ambiente (`dev`/`prod`), **en minúsculas**. Deriva el backend, se declara como GitHub Environment del caller y se exporta como `TF_VAR_environment`. El comentario del plan usa marker por ambiente (dev conserva el histórico). |
 | `tf_version` | string | `1.9.8` | Versión de Terraform. |
 | `working_directory` | string | `infra` | Directorio de los `.tf`. |
-| `extra_tf_vars_json` | string (JSON) | `{}` | `{ "<tf_var>": "<valor>" }` **no sensible** (front vars). Se exporta como `TF_VAR_<key>`. |
+| `extra_tf_vars_json` | string (JSON) | `{}` | `{ "<tf_var>": "<valor>" }` **no sensible** (legado; preferir `TFVAR_*`, que gana). Se exporta como `TF_VAR_<key>`. |
 | `plan_lock_timeout` | string | `5m` | `-lock-timeout` del plan. |
 | `comment_on_pr` | boolean | `true` | Publica/actualiza el comentario del plan en el PR. |
 | `comment_max_chars` | number | `60000` | Trunca el comentario por encima de este largo. |
-| `backend_resource_group` / `_storage_account` / `_container` / `_key` | string | (deriva del BC) | Overrides del backend. |
+| `backend_resource_group` / `_storage_account` / `_container` / `_key` | string | (deriva de BC + env) | Overrides del backend. Con marcador `prod` exigen `environment=prod` (fail-closed). |
 
-Secrets (vía `secrets: inherit` del caller): `VM_ADMIN_PASSWORD`, `GH_RUNNER_PAT` y —solo OXP— `SINCOERP_PASSWORD`.
+Secrets (vía `secrets: inherit` del caller): `VM_ADMIN_PASSWORD`, `GH_RUNNER_PAT`, `SINCOERP_PASSWORD` (OXP/cont), `FLAGSMITH_API_KEY` (cont) y `POSTGRESQL_ADMIN_PASSWORD` (cplane; **una sola línea** — la ruta `emit` no valida multilínea, a diferencia de `TFVAR_*`); vacíos se omiten.
 
 ### `_reusable-terraform-apply.yml`
 
-`terraform apply` en `push` a main (post-merge) de los `*.Infraestructura`. Un job
-autenticado (OIDC + backend): `init` → `validate` → `plan` → `apply -auto-approve`.
-`concurrency: infra-apply-<bc>` con `cancel-in-progress: false` (nunca aborta un apply en curso).
+`terraform apply` de los `*.Infraestructura`: en dev corre en `push` a main
+(post-merge); en prod SOLO por `workflow_dispatch` del caller. Un job autenticado
+(OIDC + backend): `[gate]` → `init` → `validate` → `plan` → `apply -auto-approve`.
+`concurrency: infra-apply-<bc>-<environment>` con `cancel-in-progress: false`
+(nunca aborta un apply en curso). Backend, GitHub Environment, convención
+`TFVAR_*` y reglas fail-closed (`backend_*` con `prod` ⇒ `environment=prod`;
+`environment` en minúsculas): igual que en el plan.
+
+**Gate de actor (A5)**: con `authorized_actor_team` poblado, el apply valida vía
+API que `github.actor` — y en un re-run también `github.triggering_actor`, si
+difiere — sea miembro **activo** del team, antes de tocar Terraform. Invariantes
+prod (fail-closed): `environment=prod` ⇒ team obligatorio (su ausencia falla el
+job), apply solo desde `refs/heads/main` y solo por `workflow_dispatch` (un
+caller prod conectado a `push` es denegado: el apply prod es un acto deliberado,
+no un post-merge automático).
 
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|
 | `bounded_context` | string | **requerido** | BC corto. Deriva el backend. |
+| `environment` | string | `dev` | Ambiente (`dev`/`prod`), **en minúsculas**. Deriva el backend, GitHub Environment del caller y `TF_VAR_environment`; en prod activa el gate obligatorio. |
+| `authorized_actor_team` | string | `""` | Slug del team autorizado a aplicar. Vacío ⇒ sin gate SOLO fuera de prod. Requiere `ACTOR_GATE_TOKEN`. |
 | `tf_version` | string | `1.9.8` | Versión de Terraform. |
 | `working_directory` | string | `infra` | Directorio de los `.tf`. |
-| `extra_tf_vars_json` | string (JSON) | `{}` | Igual que en plan (front vars). |
+| `extra_tf_vars_json` | string (JSON) | `{}` | Igual que en plan (legado; preferir `TFVAR_*`). |
 | `apply_lock_timeout` | string | `10m` | `-lock-timeout` de plan y apply. |
-| `backend_resource_group` / `_storage_account` / `_container` / `_key` | string | (deriva del BC) | Overrides del backend. |
+| `backend_resource_group` / `_storage_account` / `_container` / `_key` | string | (deriva de BC + env) | Overrides del backend. Con marcador `prod` exigen `environment=prod` (fail-closed). |
 
-Secrets (vía `secrets: inherit` del caller): mismos que `_reusable-terraform-plan.yml`.
+Secrets (vía `secrets: inherit` del caller): mismos que
+`_reusable-terraform-plan.yml`, más `ACTOR_GATE_TOKEN` (obligatorio cuando el
+gate está activo: fine-grained PAT u token de App con `Organization members:
+Read`; el `GITHUB_TOKEN` del run NO sirve).
 
 ---
 
@@ -734,9 +769,13 @@ Para errores nuevos, capturar el log del job, el contexto (PR/main) y el repo af
 
 El ACR está en SKU **Basic**, que no soporta retention policies nativas. La retención se implementa vía workflow:
 
-- **Inmediato:** al cerrar un PR (merge o close), `pr-cierre-cleanup.yml` borra `pr-{n}` y todos los `pr-{n}-*`.
-- **Barrido semanal:** `cleanup-acr-semanal.yml` corre los lunes 03:00 UTC y borra cualquier `pr-*` cuyo PR cerró hace más de 7 días (red de seguridad por si el cierre no disparó cleanup).
+- **Piso invariante:** cada repositorio conserva siempre su **última imagen `pr-*`** y sus **3 últimas `main-*`**, sin importar qué modo del cleanup corra ni qué responda la API de GitHub. Es lo que garantiza que el deploy a dev y la promoción a prod nunca se queden sin binario.
+- **Intra-PR:** cada push del PR quita los `pr-{n}-{shaPrev}` obsoletos, preservando el alias y el SHA recién publicado.
+- **Al cerrar un PR sin merge:** `pr-cierre-cleanup.yml` quita `pr-{n}` y sus `pr-{n}-*`. Si el PR se mergeó **no** corre: el promote de `main-deploy-dev.yml` necesita esos tags.
+- **Barrido semanal:** `cleanup-acr-semanal.yml` corre los lunes 03:00 UTC y quita cualquier `pr-*` cuyo PR cerró hace más de 7 días (red de seguridad por si el cierre no disparó cleanup), y purga los manifests con más de 30 días sin ningún tag que además no sean hijos de un índice etiquetado.
 - **Imágenes `main-*` y `dev`:** no se borran automáticamente. Si el volumen crece demasiado, se evaluará subir a SKU Standard para retention policy declarativa o agregar un cleanup adicional.
+
+El cleanup quita tags con `az acr repository untag`, nunca con `az acr repository delete --image repo:tag`: este último borra el manifest y **todos** los tags que lo comparten, y como el promote a main re-taguea el mismo manifest que el PR, ese borrado se llevaba en cascada el `main-{sha7}` desplegado. El espacio lo recupera la purga de huérfanos, que sí borra por digest.
 
 Para revisar manualmente lo que se eliminaría sin borrar nada:
 
