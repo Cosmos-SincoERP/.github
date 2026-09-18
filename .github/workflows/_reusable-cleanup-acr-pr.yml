@@ -31,7 +31,9 @@ on:
           Si se provee, modo dirigido: borra `pr-{N}` y `pr-{N}-*` en cada repo,
           sin verificar estado del PR (asume que el caller ya sabe que cerró).
           Si se omite, modo barrido: revisa todos los `pr-*` y borra los de PRs
-          cerrados hace más de `min_age_days`.
+          cerrados hace más de `min_age_days`, y purga los manifests huérfanos.
+          En ambos modos rige la retención garantizada (ver job `cleanup`): el
+          último `pr-*` del repositorio nunca se borra, aunque sea de este PR.
         type: string
         required: false
         default: ""
@@ -128,7 +130,24 @@ jobs:
           REPOS: ${{ steps.repos.outputs.list }}
         run: |
           set -euo pipefail
+
+          # ── Retención garantizada ────────────────────────────────────────
+          # Pase lo que pase, cada repositorio conserva su última imagen `pr-*`
+          # y sus 3 últimas `main-*`. Es un fail-safe DELIBERADAMENTE
+          # independiente de la selección de abajo: si la API de GitHub
+          # responde algo inesperado, o si `date -d` no parsea el `closed_at`
+          # (cae a epoch 0 ⇒ "edad infinita" ⇒ borraría), el repositorio sigue
+          # teniendo una imagen desplegable y el deploy a dev / la promoción a
+          # prod no se quedan sin binario.
+          KEEP_LAST_PR=1
+          KEEP_LAST_MAIN=3
+          # `untag` no libera bytes: deja el manifest huérfano. Se purga por
+          # digest, pero sólo tras este margen — Swarm fija el digest al
+          # desplegar un servicio y lo reusa si una tarea necesita re-pull.
+          PURGE_UNTAGGED_AFTER_DAYS=30
+
           deleted_count=0
+          purged_count=0
           deleted_file=$(mktemp)
 
           while IFS= read -r repo; do
@@ -136,15 +155,48 @@ jobs:
             full="${PREFIX}/${repo}"
             echo "::group::Repo $full"
 
+            # Una sola lectura ordenada por fecha: alimenta el conjunto
+            # protegido y la aserción final.
+            tags_desc=$(az acr repository show-tags -n "$ACR" --repository "$full" \
+                          --orderby time_desc -o tsv 2>/dev/null || true)
+
+            protected_file=$(mktemp)
+            grep -E '^pr-[0-9]+-[0-9a-f]{7}$' <<< "$tags_desc" \
+              | head -n "$KEEP_LAST_PR" >> "$protected_file" || true
+            grep -E '^main-[0-9a-f]{7}$' <<< "$tags_desc" \
+              | head -n "$KEEP_LAST_MAIN" >> "$protected_file" || true
+            # Si ningún tag tiene la forma inmutable `pr-{N}-{sha7}` (p. ej. un
+            # alias suelto que sobrevivió a un run antiguo), proteger igual el
+            # `pr-*` más reciente: el piso es "una imagen pr-* por repositorio",
+            # no "una con la forma canónica".
+            if ! grep -qE '^pr-' "$protected_file"; then
+              grep -m1 -E '^pr-' <<< "$tags_desc" >> "$protected_file" || true
+            fi
+            # Los alias mutables (`pr-{N}`, `main-latest`) apuntan al mismo
+            # manifest que su inmutable, así que viajan con él.
+            aliases=$(sed -E -n 's/^(pr-[0-9]+)-[0-9a-f]{7}$/\1/p' "$protected_file")
+            [[ -n "$aliases" ]] && printf '%s\n' "$aliases" >> "$protected_file"
+            grep -qxF 'main-latest' <<< "$tags_desc" \
+              && echo 'main-latest' >> "$protected_file" || true
+
+            if [[ -s "$protected_file" ]]; then
+              echo "  Protegidos por retención: $(paste -sd' ' "$protected_file")"
+            fi
+
             if [[ -n "$PR_NUMBER" ]]; then
-              tags=$(az acr repository show-tags -n "$ACR" --repository "$full" -o tsv 2>/dev/null \
-                | grep -E "^pr-${PR_NUMBER}(-.*)?$" || true)
+              tags=$(grep -E "^pr-${PR_NUMBER}(-.*)?$" <<< "$tags_desc" || true)
             else
-              tags=$(az acr repository show-tags -n "$ACR" --repository "$full" -o tsv 2>/dev/null \
-                | grep -E "^pr-[0-9]+" || true)
+              tags=$(grep -E "^pr-[0-9]+" <<< "$tags_desc" || true)
             fi
 
             for tag in $tags; do
+              # La retención garantizada se evalúa ANTES que `keep_sha7` y que
+              # el estado del PR: es el piso que ninguna otra regla levanta.
+              if grep -qxF "$tag" "$protected_file"; then
+                echo "  Skip: $tag (retención garantizada)"
+                continue
+              fi
+
               # En modo dirigido, si el caller pasó keep_sha7 (cleanup intra-PR),
               # preservar tanto el alias mutable `pr-{N}` como el inmutable
               # `pr-{N}-{keep_sha7}`. Los demás `pr-{N}-*` (commits anteriores
@@ -187,19 +239,21 @@ jobs:
               fi
 
               if [[ "$DRY_RUN" == "true" ]]; then
-                echo "  [DRY-RUN] borraría: ${full}:${tag}"
+                echo "  [DRY-RUN] untag: ${full}:${tag}"
               else
-                echo "  Borrando: ${full}:${tag}"
-                # ACR borra el manifest subyacente cuando se elimina su último
-                # tag, lo que tumba en cascada otros tags que apuntaran al mismo
-                # manifest (ej.: alias `pr-N` + inmutable `pr-N-<sha7>` sobre el
-                # mismo build). Tratamos `TagNotFound` como éxito idempotente:
-                # el estado deseado (tag inexistente) ya se logró.
-                if ! err=$(az acr repository delete -n "$ACR" --image "${full}:${tag}" --yes 2>&1 >/dev/null); then
-                  if grep -qiE "(specified tag does not exist|TagNotFound)" <<< "$err"; then
-                    echo "    (ya no existe — manifest borrado en cascada por un tag anterior)"
+                echo "  Untag: ${full}:${tag}"
+                # `untag` borra SÓLO la referencia del tag. `repository delete
+                # --image repo:tag` borraría el manifest entero y con él todos
+                # los tags que lo comparten — y el promote a main re-taguea el
+                # mismo manifest (`docker pull pr-N-<sha7>` → `push main-<X>`),
+                # así que aquel borrado se llevaba en cascada el `main-<X>` que
+                # el deploy tenía vivo. El espacio lo recupera la purga de
+                # manifests huérfanos, más abajo.
+                if ! err=$(az acr repository untag -n "$ACR" --image "${full}:${tag}" 2>&1 >/dev/null); then
+                  if grep -qiE "(does not exist|TagNotFound|not found)" <<< "$err"; then
+                    echo "    (ya no existe — carrera con otro run)"
                   else
-                    echo "::error::Fallo al borrar ${full}:${tag}: $err"
+                    echo "::error::Fallo al untaggear ${full}:${tag}: $err"
                     exit 1
                   fi
                 fi
@@ -207,10 +261,54 @@ jobs:
               echo "- \`${full}:${tag}\`" >> "$deleted_file"
               deleted_count=$((deleted_count + 1))
             done
+
+            # Purga de manifests huérfanos. Sólo en modo barrido: los modos
+            # dirigidos (intra-PR, cierre de PR) corren en cada push y deben
+            # ser rápidos. Un manifest sin tags no lo referencia ningún deploy
+            # — todo el pipeline resuelve por tag y descarta el digest
+            # (`${image%%@*}` en `_reusable-deploy-swarm.yml`).
+            if [[ -z "$PR_NUMBER" ]]; then
+              cutoff=$(( $(date +%s) - PURGE_UNTAGGED_AFTER_DAYS * 86400 ))
+              while IFS=$'\t' read -r digest updated; do
+                [[ -z "$digest" ]] && continue
+                # Al revés que arriba: si la fecha no parsea, NO se borra.
+                upd_epoch=$(date -d "$updated" +%s 2>/dev/null || echo "")
+                if [[ -z "$upd_epoch" ]]; then
+                  echo "  Skip huérfano ${digest:0:19}… (lastUpdateTime '$updated' no parseable)"
+                  continue
+                fi
+                (( upd_epoch > cutoff )) && continue
+                if [[ "$DRY_RUN" == "true" ]]; then
+                  echo "  [DRY-RUN] purgaría huérfano: ${full}@${digest}"
+                else
+                  echo "  Purgando huérfano: ${full}@${digest}"
+                  az acr repository delete -n "$ACR" --image "${full}@${digest}" --yes >/dev/null
+                fi
+                purged_count=$((purged_count + 1))
+              done < <(az acr manifest list-metadata -r "$ACR" -n "$full" --orderby time_desc \
+                         --query "[?tags[0] == null].[digest, lastUpdateTime]" -o tsv 2>/dev/null || true)
+            fi
+
+            # Aserción: la retención garantizada se cumplió de hecho, no sólo
+            # de intención. Falla el job en vez de dejar un repo sin imagen.
+            if [[ "$DRY_RUN" != "true" ]]; then
+              tags_after=$(az acr repository show-tags -n "$ACR" --repository "$full" -o tsv 2>/dev/null || true)
+              if grep -qE '^pr-' <<< "$tags_desc" && ! grep -qE '^pr-' <<< "$tags_after"; then
+                echo "::error::$full tenía tags pr-* y quedó sin ninguno tras el cleanup."
+                exit 1
+              fi
+              main_before=$(grep -cE '^main-' <<< "$tags_desc" || true)
+              main_after=$(grep -cE '^main-' <<< "$tags_after" || true)
+              if (( ${main_after:-0} < ${main_before:-0} )); then
+                echo "::error::$full perdió tags main-* durante el cleanup (${main_before} → ${main_after})."
+                exit 1
+              fi
+            fi
             echo "::endgroup::"
           done <<< "$REPOS"
 
           echo "count=$deleted_count" >> "$GITHUB_OUTPUT"
+          echo "purged=$purged_count" >> "$GITHUB_OUTPUT"
           {
             echo "list<<EOF"
             cat "$deleted_file" 2>/dev/null || true
@@ -225,6 +323,7 @@ jobs:
           MIN_AGE_DAYS: ${{ inputs.min_age_days }}
           DRY_RUN: ${{ inputs.dry_run }}
           COUNT: ${{ steps.cleanup.outputs.count || 0 }}
+          PURGED: ${{ steps.cleanup.outputs.purged || 0 }}
           DETAIL: ${{ steps.cleanup.outputs.list }}
         run: |
           if [[ -n "$PR_NUMBER" ]]; then
@@ -237,7 +336,9 @@ jobs:
             echo ""
             echo "- Modo: $mode"
             echo "- Dry-run: \`$DRY_RUN\`"
+            echo "- Retención garantizada: última \`pr-*\` + 3 últimas \`main-*\` por repositorio"
             echo "- Tags eliminados: **$COUNT**"
+            echo "- Manifests huérfanos purgados: **$PURGED**"
             if [[ -n "$DETAIL" ]]; then
               echo ""
               echo "### Detalle"

@@ -428,10 +428,16 @@ jobs:
 
 ### `_reusable-cleanup-acr-pr.yml`
 
-Borra tags `pr-*` del ACR. Dos modos:
+Quita tags `pr-*` del ACR. Dos modos:
 
-- **Dirigido** (`pr_number` provisto): borra `pr-{N}` y `pr-{N}-*` en cada repo. El caller (workflow `pull_request: closed`) ya sabe que el PR cerró. Combinado con `keep_sha7`, se usa también para **cleanup intra-PR** desde el wrapper `pr-imagen-docker.yml`: cada push borra los `pr-{N}-{shaPrev}` obsoletos preservando el alias y el SHA recién publicado.
-- **Barrido** (sin `pr_number`): consulta vía `gh pr view` el estado de cada PR y borra los cerrados hace más de `min_age_days`.
+- **Dirigido** (`pr_number` provisto): quita `pr-{N}` y `pr-{N}-*` en cada repo. El caller (workflow `pull_request: closed`) ya sabe que el PR cerró. Combinado con `keep_sha7`, se usa también para **cleanup intra-PR** desde el wrapper `pr-imagen-docker.yml`: cada push borra los `pr-{N}-{shaPrev}` obsoletos preservando el alias y el SHA recién publicado.
+- **Barrido** (sin `pr_number`): consulta el estado de cada PR contra la API de GitHub y quita los cerrados hace más de `min_age_days`. Además purga los manifests huérfanos (ver abajo).
+
+**Retención garantizada.** Sobre ambos modos rige un piso que ninguna otra regla levanta: cada repositorio conserva su **última imagen `pr-*`** y sus **3 últimas `main-*`** (con sus alias mutables `pr-{N}` y `main-latest`, que apuntan al mismo manifest). El skip se evalúa antes que `keep_sha7` y antes de consultar el estado del PR, y una aserción al final del job falla el run si la garantía no se cumplió. Consecuencia buscada: al cerrar un PR sin merge, si su `pr-{N}-{sha7}` es el más reciente del repositorio, se conserva hasta que otro PR lo reemplace.
+
+**Borra por tag, no por manifest.** Usa `az acr repository untag`, no `az acr repository delete --image repo:tag` — este último borra el manifest y **todos** los tags que lo referencian. Importa porque el promote a main re-taguea el mismo manifest (`docker pull pr-{N}-{sha7}` → `docker push main-{X}`): borrar por manifest se llevaba en cascada el `main-{X}` que el deploy tenía vivo.
+
+**Purga de huérfanos.** Como `untag` no libera bytes, el modo barrido borra por digest los manifests que llevan más de **30 días** sin ningún tag. Un manifest sin tags no lo referencia ningún deploy (todo el pipeline resuelve por tag); el margen cubre el único caso en que un digest importa — Swarm lo fija al desplegar y lo reusa si una tarea necesita re-pull.
 
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|
@@ -763,9 +769,13 @@ Para errores nuevos, capturar el log del job, el contexto (PR/main) y el repo af
 
 El ACR está en SKU **Basic**, que no soporta retention policies nativas. La retención se implementa vía workflow:
 
-- **Inmediato:** al cerrar un PR (merge o close), `pr-cierre-cleanup.yml` borra `pr-{n}` y todos los `pr-{n}-*`.
-- **Barrido semanal:** `cleanup-acr-semanal.yml` corre los lunes 03:00 UTC y borra cualquier `pr-*` cuyo PR cerró hace más de 7 días (red de seguridad por si el cierre no disparó cleanup).
+- **Piso invariante:** cada repositorio conserva siempre su **última imagen `pr-*`** y sus **3 últimas `main-*`**, sin importar qué modo del cleanup corra ni qué responda la API de GitHub. Es lo que garantiza que el deploy a dev y la promoción a prod nunca se queden sin binario.
+- **Intra-PR:** cada push del PR quita los `pr-{n}-{shaPrev}` obsoletos, preservando el alias y el SHA recién publicado.
+- **Al cerrar un PR sin merge:** `pr-cierre-cleanup.yml` quita `pr-{n}` y sus `pr-{n}-*`. Si el PR se mergeó **no** corre: el promote de `main-deploy-dev.yml` necesita esos tags.
+- **Barrido semanal:** `cleanup-acr-semanal.yml` corre los lunes 03:00 UTC y quita cualquier `pr-*` cuyo PR cerró hace más de 7 días (red de seguridad por si el cierre no disparó cleanup), y purga los manifests con más de 30 días sin ningún tag.
 - **Imágenes `main-*` y `dev`:** no se borran automáticamente. Si el volumen crece demasiado, se evaluará subir a SKU Standard para retention policy declarativa o agregar un cleanup adicional.
+
+El cleanup quita tags con `az acr repository untag`, nunca con `az acr repository delete --image repo:tag`: este último borra el manifest y **todos** los tags que lo comparten, y como el promote a main re-taguea el mismo manifest que el PR, ese borrado se llevaba en cascada el `main-{sha7}` desplegado. El espacio lo recupera la purga de huérfanos, que sí borra por digest.
 
 Para revisar manualmente lo que se eliminaría sin borrar nada:
 
