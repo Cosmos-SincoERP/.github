@@ -57,6 +57,16 @@ on:
         type: boolean
         required: false
         default: false
+      keep_last_pr:
+        description: "Cuántos tags `pr-*` inmutables conserva cada repositorio, pase lo que pase."
+        type: number
+        required: false
+        default: 3
+      keep_last_main:
+        description: "Cuántos tags `main-*` conserva cada repositorio. Sólo tiene efecto si la poda de `main-*` está habilitada (ver `runner_group_prod`)."
+        type: number
+        required: false
+        default: 3
       runner_group:
         description: |
           Runner group de GitHub Actions donde correr el cleanup
@@ -66,14 +76,80 @@ on:
           hace exclusivamente vía runner group (ver `bounded-contexts.yml`).
         type: string
         required: true
+      runner_group_prod:
+        description: |
+          Runner group del swarm de PRODUCCIÓN del BC (ej. `swarm-deploy-oxp-prod`).
+          Declararlo HABILITA la poda de `main-*`: sin él, los `main-*` se
+          conservan todos, que es el comportamiento histórico.
+
+          La poda es segura porque el conjunto protegido incluye lo que cada
+          swarm tiene DESPLEGADO, leído con `docker service inspect` en los dos
+          runners. Hace falta porque prod sólo avanza por `workflow_dispatch`
+          deliberado y queda muy por detrás de dev: en oxp/Radicación son ~79
+          deploys a dev por 8 promociones a prod en 30 días, o sea unos 10
+          `main-*` de distancia. Podar por «últimos N» sin esa exclusión borra
+          la imagen que producción está corriendo.
+
+          Si la lectura de cualquiera de los dos swarms falla, NO se poda
+          ningún `main-*` en esa corrida (fail-closed).
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
   pull-requests: read
 
 jobs:
+  # Tags que el swarm de PRODUCCIÓN tiene desplegados. Corre en el runner de
+  # prod porque es el único que ve ese swarm; sólo lee. Es el conjunto que
+  # vuelve segura la poda de `main-*`: sin él no se poda nada.
+  tags-vivos-prod:
+    name: Leer tags desplegados en prod
+    if: inputs.runner_group_prod != ''
+    runs-on:
+      group: ${{ inputs.runner_group_prod }}
+      labels: [self-hosted, azure, swarm-deploy]
+    timeout-minutes: 5
+    outputs:
+      tags: ${{ steps.vivos.outputs.tags }}
+    steps:
+      - name: Tags desplegados
+        id: vivos
+        shell: bash
+        env:
+          ACR: ${{ inputs.acr_name }}
+          PREFIX: ${{ inputs.repository_prefix }}
+        run: |
+          set -euo pipefail
+          # Todos los servicios del swarm, no sólo los de un stack: en la VM
+          # conviven el stack de la app y el de plataforma, y cualquier imagen
+          # de este BC que esté corriendo tiene que quedar protegida.
+          ids=$(docker service ls -q)
+          vivos=$(mktemp)
+          if [[ -n "$ids" ]]; then
+            # shellcheck disable=SC2086
+            docker service inspect $ids \
+              --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' \
+              | sed 's/@.*//' \
+              | grep -E "^${ACR}\.azurecr\.io/${PREFIX}/" \
+              | sed -E "s|^${ACR}\.azurecr\.io/${PREFIX}/||" \
+              | sort -u > "$vivos" || true
+          fi
+          echo "Tags desplegados en prod: $(wc -l < "$vivos" | tr -d ' ')"
+          cat "$vivos"
+          {
+            echo "tags<<EOF"
+            cat "$vivos"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
   cleanup:
     name: Cleanup tags PR del ACR
+    needs: [tags-vivos-prod]
+    # `tags-vivos-prod` se saltea cuando el caller no declara runner_group_prod;
+    # el cleanup corre igual, sólo que sin podar `main-*`.
+    if: always() && contains(fromJSON('["success","skipped"]'), needs.tags-vivos-prod.result)
     runs-on:
       group: ${{ inputs.runner_group }}
       labels: [self-hosted, azure, swarm-deploy]
@@ -114,6 +190,36 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "count=$count" >> "$GITHUB_OUTPUT"
 
+      # Contraparte de `tags-vivos-prod` para el swarm de DEV. Va como step y no
+      # como job porque el cleanup ya corre en el runner de dev.
+      - name: Leer tags desplegados en dev
+        id: vivos_dev
+        if: inputs.runner_group_prod != ''
+        shell: bash
+        env:
+          ACR: ${{ inputs.acr_name }}
+          PREFIX: ${{ inputs.repository_prefix }}
+        run: |
+          set -euo pipefail
+          ids=$(docker service ls -q)
+          vivos=$(mktemp)
+          if [[ -n "$ids" ]]; then
+            # shellcheck disable=SC2086
+            docker service inspect $ids \
+              --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}' \
+              | sed 's/@.*//' \
+              | grep -E "^${ACR}\.azurecr\.io/${PREFIX}/" \
+              | sed -E "s|^${ACR}\.azurecr\.io/${PREFIX}/||" \
+              | sort -u > "$vivos" || true
+          fi
+          echo "Tags desplegados en dev: $(wc -l < "$vivos" | tr -d ' ')"
+          cat "$vivos"
+          {
+            echo "tags<<EOF"
+            cat "$vivos"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Cleanup
         id: cleanup
         if: steps.repos.outputs.count != '0'
@@ -128,6 +234,11 @@ jobs:
           REPO_FULL: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           REPOS: ${{ steps.repos.outputs.list }}
+          KEEP_LAST_PR_IN: ${{ inputs.keep_last_pr }}
+          KEEP_LAST_MAIN_IN: ${{ inputs.keep_last_main }}
+          PODA_MAIN_HABILITADA: ${{ inputs.runner_group_prod != '' }}
+          VIVOS_DEV: ${{ steps.vivos_dev.outputs.tags }}
+          VIVOS_PROD: ${{ needs.tags-vivos-prod.outputs.tags }}
         run: |
           set -euo pipefail
 
@@ -151,12 +262,39 @@ jobs:
           # existe y los repos acumulan cientos de tags— tiene que resolver
           # antes cómo excluir el tag que cada ambiente tiene desplegado; este
           # piso de 3 no alcanza para eso.
-          KEEP_LAST_PR=1
-          KEEP_LAST_MAIN=3
+          KEEP_LAST_PR="${KEEP_LAST_PR_IN:-3}"
+          KEEP_LAST_MAIN="${KEEP_LAST_MAIN_IN:-3}"
           # `untag` no libera bytes: deja el manifest huérfano. Se purga por
-          # digest, pero sólo tras este margen — Swarm fija el digest al
-          # desplegar un servicio y lo reusa si una tarea necesita re-pull.
-          PURGE_UNTAGGED_AFTER_DAYS=30
+          # digest, pero sólo tras este margen. Antes eran 30 días porque Swarm
+          # fija el digest al desplegar y lo reusa si una tarea necesita
+          # re-pull; con el conjunto desplegado protegido por su tag, un
+          # manifest sin tag ya no puede ser el de un servicio vivo y el margen
+          # sólo tiene que cubrir operaciones en vuelo.
+          PURGE_UNTAGGED_AFTER_DAYS=7
+
+          # ── Conjunto desplegado ──────────────────────────────────────────
+          # Tags que los swarms de dev y prod tienen corriendo AHORA, leídos con
+          # `docker service inspect` en cada runner. Es lo que permite podar
+          # `main-*` sin borrarle la imagen a un ambiente: prod sólo avanza por
+          # `workflow_dispatch` y queda muy por detrás de dev (en oxp/Radicación,
+          # ~10 `main-*` de distancia), así que «últimos N» a secas no alcanza.
+          desplegado_file=$(mktemp)
+          printf '%s\n' "${VIVOS_DEV:-}" "${VIVOS_PROD:-}" \
+            | grep -v '^$' | sort -u > "$desplegado_file" || true
+
+          poda_main=0
+          if [[ "${PODA_MAIN_HABILITADA:-false}" == "true" ]]; then
+            if [[ -s "$desplegado_file" ]]; then
+              poda_main=1
+              echo "Poda de main-* HABILITADA. Desplegado y protegido: $(wc -l < "$desplegado_file" | tr -d ' ') tag(s)"
+              sed 's/^/  · /' "$desplegado_file"
+            else
+              # Fail-closed: `runner_group_prod` declarado pero ningún tag
+              # desplegado significa que la lectura de los swarms no devolvió
+              # nada. Podar a ciegas borraría la imagen viva de un ambiente.
+              echo "::warning::La lectura de los swarms no devolvió ningún tag desplegado. Poda de main-* OMITIDA en esta corrida (fail-closed)."
+            fi
+          fi
 
           deleted_count=0
           purged_count=0
@@ -190,6 +328,11 @@ jobs:
             if ! grep -qE '^pr-' "$protected_file"; then
               grep -m1 -E '^pr-' <<< "$tags_desc" >> "$protected_file" || true
             fi
+            # Todo lo que un swarm tiene corriendo, sea `main-*`, `pr-*` o lo
+            # que sea: si está desplegado, no se toca.
+            if [[ -s "$desplegado_file" ]]; then
+              grep -xF -f "$desplegado_file" <<< "$tags_desc" >> "$protected_file" || true
+            fi
             # Los alias mutables (`pr-{N}`, `main-latest`) apuntan al mismo
             # manifest que su inmutable, así que viajan con él.
             aliases=$(sed -E -n 's/^(pr-[0-9]+)-[0-9a-f]{7}$/\1/p' "$protected_file")
@@ -201,8 +344,13 @@ jobs:
               echo "  Protegidos por retención: $(paste -sd' ' "$protected_file")"
             fi
 
+            # Los `main-*` sólo son candidatos en modo barrido y con la poda
+            # habilitada. El modo dirigido (cierre de PR, cleanup intra-PR) no
+            # toca `main-*` nunca.
             if [[ -n "$PR_NUMBER" ]]; then
               tags=$(grep -E "^pr-${PR_NUMBER}(-.*)?$" <<< "$tags_desc" || true)
+            elif (( poda_main == 1 )); then
+              tags=$(grep -E "^pr-[0-9]+|^main-" <<< "$tags_desc" || true)
             else
               tags=$(grep -E "^pr-[0-9]+" <<< "$tags_desc" || true)
             fi
@@ -226,7 +374,10 @@ jobs:
                 continue
               fi
 
-              if [[ -z "$PR_NUMBER" ]]; then
+              # Sólo los `pr-*` se consultan contra la API de GitHub. Un
+              # `main-*` que llegó hasta acá no está protegido por retención ni
+              # desplegado en ningún ambiente: se borra sin más trámite.
+              if [[ -z "$PR_NUMBER" && "$tag" == pr-* ]]; then
                 pr_n=$(echo "$tag" | sed -E 's/^pr-([0-9]+).*/\1/')
                 http_code=$(curl -s -o /tmp/pr.json -w "%{http_code}" \
                   -H "Authorization: Bearer $GH_TOKEN" \
@@ -370,18 +521,19 @@ jobs:
               fi
             fi
 
-            # Aserción: la retención garantizada se cumplió de hecho, no sólo
-            # de intención. Falla el job en vez de dejar un repo sin imagen.
+            # Aserción: el conjunto protegido sobrevivió de hecho, no sólo de
+            # intención. Con la poda de `main-*` activa ya no sirve comparar
+            # recuentos —que bajen es lo esperado—, así que se verifica tag por
+            # tag. Falla el job en vez de dejar un ambiente sin su imagen.
             if [[ "$DRY_RUN" != "true" ]]; then
               tags_after=$(az acr repository show-tags -n "$ACR" --repository "$full" -o tsv 2>/dev/null || true)
-              if grep -qE '^pr-' <<< "$tags_desc" && ! grep -qE '^pr-' <<< "$tags_after"; then
-                echo "::error::$full tenía tags pr-* y quedó sin ninguno tras el cleanup."
+              perdidos=$(sort -u "$protected_file" | grep -vxF -f <(printf '%s\n' "$tags_after") || true)
+              if [[ -n "$perdidos" ]]; then
+                echo "::error::$full perdió tags protegidos durante el cleanup: $(tr '\n' ' ' <<< "$perdidos")"
                 exit 1
               fi
-              main_before=$(grep -cE '^main-' <<< "$tags_desc" || true)
-              main_after=$(grep -cE '^main-' <<< "$tags_after" || true)
-              if (( ${main_after:-0} < ${main_before:-0} )); then
-                echo "::error::$full perdió tags main-* durante el cleanup (${main_before} → ${main_after})."
+              if grep -qE '^pr-' <<< "$tags_desc" && ! grep -qE '^pr-' <<< "$tags_after"; then
+                echo "::error::$full tenía tags pr-* y quedó sin ninguno tras el cleanup."
                 exit 1
               fi
             fi
@@ -418,6 +570,9 @@ jobs:
           PURGED: ${{ steps.cleanup.outputs.purged || 0 }}
           DETAIL: ${{ steps.cleanup.outputs.list }}
           UNTAG_FAILED: ${{ steps.cleanup.outputs.untag_failed }}
+          KEEP_LAST_PR: ${{ inputs.keep_last_pr }}
+          KEEP_LAST_MAIN: ${{ inputs.keep_last_main }}
+          PODA_MAIN: ${{ inputs.runner_group_prod != '' }}
         run: |
           if [[ -n "$PR_NUMBER" ]]; then
             mode="PR #$PR_NUMBER"
@@ -429,7 +584,12 @@ jobs:
             echo ""
             echo "- Modo: $mode"
             echo "- Dry-run: \`$DRY_RUN\`"
-            echo "- Retención garantizada: última \`pr-*\` + 3 últimas \`main-*\` por repositorio (piso; los \`main-*\` no se podan)"
+            echo "- Retención: últimas \`$KEEP_LAST_PR\` \`pr-*\` + últimas \`$KEEP_LAST_MAIN\` \`main-*\` por repositorio, más todo lo desplegado en dev y prod"
+            if [[ "$PODA_MAIN" == "true" ]]; then
+              echo "- Poda de \`main-*\`: **activa** (excluye lo desplegado en ambos swarms)"
+            else
+              echo "- Poda de \`main-*\`: inactiva (el caller no declara \`runner_group_prod\`)"
+            fi
             echo "- Tags eliminados: **$COUNT**"
             echo "- Manifests huérfanos purgados: **$PURGED**"
             if [[ -n "$DETAIL" ]]; then
