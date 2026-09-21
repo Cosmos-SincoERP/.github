@@ -439,6 +439,8 @@ Quita tags `pr-*` del ACR. Dos modos:
 
 **Purga de huérfanos.** Como `untag` no libera bytes, el modo barrido borra por digest los manifests que llevan más de **30 días** sin ningún tag **y** que ningún manifest etiquetado referencia. Esa segunda condición no es opcional: las imágenes se publican como índices OCI multi-plataforma, y los manifests hijos del índice no llevan tag propio — un filtro por `tags == null` los vería como huérfanos y purgarlos rompería el `main-<sha7>` que el índice etiqueta. El margen de 30 días cubre además el caso en que un digest importa por sí mismo: Swarm lo fija al desplegar y lo reusa si una tarea necesita re-pull.
 
+La lista de digests referenciados se arma llamando `az acr manifest show` una vez por tag del repositorio — en el ACR de OxP eso son más de mil llamadas por barrido, con repositorios de hasta 251 tags. Si alguna falla (throttling del ACR, red, token vencido a mitad del run), los hijos de ESE índice quedan fuera de la lista y se verían como huérfanos. Por eso la purga es **fail-closed por repositorio**: si algún tag no se pudo resolver, el job emite un `::warning::` con cuáles fueron y **omite la purga en ese repositorio**, dejando el untag de `pr-*` intacto. Se pierde espacio hasta el barrido siguiente; no se pierde una imagen desplegada, que es irrecuperable.
+
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|
 | `acr_name` | string | `croxpdeveus2001` | |
@@ -769,7 +771,8 @@ Para errores nuevos, capturar el log del job, el contexto (PR/main) y el repo af
 
 El ACR está en SKU **Basic**, que no soporta retention policies nativas. La retención se implementa vía workflow:
 
-- **Piso invariante:** cada repositorio conserva siempre su **última imagen `pr-*`** y sus **3 últimas `main-*`**, sin importar qué modo del cleanup corra ni qué responda la API de GitHub. Es lo que garantiza que el deploy a dev y la promoción a prod nunca se queden sin binario.
+- **Piso invariante:** cada repositorio conserva siempre su **última imagen `pr-*`** y sus **3 últimas `main-*`**, sin importar qué modo del cleanup corra ni qué responda la API de GitHub. Es lo que garantiza que el deploy a dev nunca se quede sin binario.
+- **Los `main-*` no se podan.** El cleanup sólo considera candidatos los tags `pr-*`: un `main-{sha7}` no se destaguea nunca, por antiguo que sea. Eso es lo que protege a **producción**, que consume el mismo ACR dev (decisión D-ACR) y suele correr una versión bastante anterior a la de dev, porque sólo avanza por `workflow_dispatch` deliberado. El piso de 3 `main-*` es un fail-safe del bucle de `pr-*`, **no** un tope de retención — hoy no hay ninguna poda de `main-*` y los repositorios acumulan cientos de tags. Antes de agregar una, hay que resolver cómo excluir el tag que cada ambiente tiene desplegado.
 - **Intra-PR:** cada push del PR quita los `pr-{n}-{shaPrev}` obsoletos, preservando el alias y el SHA recién publicado.
 - **Al cerrar un PR sin merge:** `pr-cierre-cleanup.yml` quita `pr-{n}` y sus `pr-{n}-*`. Si el PR se mergeó **no** corre: el promote de `main-deploy-dev.yml` necesita esos tags.
 - **Barrido semanal:** `cleanup-acr-semanal.yml` corre los lunes 03:00 UTC y quita cualquier `pr-*` cuyo PR cerró hace más de 7 días (red de seguridad por si el cierre no disparó cleanup), y purga los manifests con más de 30 días sin ningún tag que además no sean hijos de un índice etiquetado.

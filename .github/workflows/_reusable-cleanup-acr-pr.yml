@@ -139,6 +139,18 @@ jobs:
           # (cae a epoch 0 ⇒ "edad infinita" ⇒ borraría), el repositorio sigue
           # teniendo una imagen desplegable y el deploy a dev / la promoción a
           # prod no se quedan sin binario.
+          #
+          # Lo que protege a PRODUCCIÓN es más fuerte que este piso, y conviene
+          # no confundirlos: los `main-*` NUNCA entran al conjunto de candidatos
+          # a borrado —la selección de abajo sólo mira `pr-*`— así que un
+          # `main-<sha7>` sobrevive indefinidamente aunque prod corra una
+          # versión muy anterior a la de dev, que es el caso normal (prod sólo
+          # avanza por `workflow_dispatch` deliberado). `KEEP_LAST_MAIN` es un
+          # piso, no un tope: no hay poda de `main-*`.
+          # Quien vaya a AGREGAR una política de retención de `main-*` —hoy no
+          # existe y los repos acumulan cientos de tags— tiene que resolver
+          # antes cómo excluir el tag que cada ambiente tiene desplegado; este
+          # piso de 3 no alcanza para eso.
           KEEP_LAST_PR=1
           KEEP_LAST_MAIN=3
           # `untag` no libera bytes: deja el manifest huérfano. Se purga por
@@ -275,38 +287,55 @@ jobs:
               # índice y sus manifests hijos NO llevan tag propio, así que un
               # filtro por `tags[0] == null` los ve como huérfanos aunque el
               # índice esté vivo y desplegado. Purgarlos rompería ese tag.
+              #
+              # Los fallos de resolución se registran en vez de tragarse. Un
+              # `az acr manifest show` que falle —throttling del ACR, red, token
+              # vencido a mitad del barrido— deja los hijos de ESE índice fuera
+              # de la lista, y purgar con la lista incompleta borra por digest
+              # los manifests de un tag vivo: irreversible, y silencioso hasta
+              # que alguien necesite re-pull. Con la lista incompleta NO se purga.
               referenced_file=$(mktemp)
+              refs_fail_file=$(mktemp)
               if [[ -n "$tags_desc" ]]; then
                 grep -v '^$' <<< "$tags_desc" \
-                  | xargs -r -P 6 -I{} bash -c \
-                      'az acr manifest show -r "$0" -n "$1:$2" -o json 2>/dev/null \
-                         | jq -r ".manifests[]?.digest" 2>/dev/null || true' \
-                      "$ACR" "$full" {} \
+                  | xargs -r -P 6 -I{} bash -c '
+                      if out=$(az acr manifest show -r "$0" -n "$1:$3" -o json 2>/dev/null); then
+                        jq -r ".manifests[]?.digest" <<< "$out" 2>/dev/null \
+                          || printf "%s\n" "$3" >> "$2"
+                      else
+                        printf "%s\n" "$3" >> "$2"
+                      fi' \
+                      "$ACR" "$full" "$refs_fail_file" {} \
                   >> "$referenced_file" || true
               fi
 
-              while IFS=$'\t' read -r digest updated; do
-                [[ -z "$digest" ]] && continue
-                if grep -qxF "$digest" "$referenced_file"; then
-                  echo "  Skip huérfano ${digest:0:19}… (hijo de un índice etiquetado)"
-                  continue
-                fi
-                # Al revés que arriba: si la fecha no parsea, NO se borra.
-                upd_epoch=$(date -d "$updated" +%s 2>/dev/null || echo "")
-                if [[ -z "$upd_epoch" ]]; then
-                  echo "  Skip huérfano ${digest:0:19}… (lastUpdateTime '$updated' no parseable)"
-                  continue
-                fi
-                (( upd_epoch > cutoff )) && continue
-                if [[ "$DRY_RUN" == "true" ]]; then
-                  echo "  [DRY-RUN] purgaría huérfano: ${full}@${digest}"
-                else
-                  echo "  Purgando huérfano: ${full}@${digest}"
-                  az acr repository delete -n "$ACR" --image "${full}@${digest}" --yes >/dev/null
-                fi
-                purged_count=$((purged_count + 1))
-              done < <(az acr manifest list-metadata -r "$ACR" -n "$full" --orderby time_desc \
-                         --query "[?tags[0] == null].[digest, lastUpdateTime]" -o tsv 2>/dev/null || true)
+              if [[ -s "$refs_fail_file" ]]; then
+                fail_n=$(wc -l < "$refs_fail_file" | tr -d ' ')
+                echo "::warning::$full: no se pudo resolver el manifest de ${fail_n} tag(s) ($(paste -sd' ' "$refs_fail_file")). Purga de huérfanos OMITIDA en este repositorio: con la lista de digests referenciados incompleta, un hijo de un índice vivo se vería como huérfano y el borrado por digest es irreversible."
+              else
+                while IFS=$'\t' read -r digest updated; do
+                  [[ -z "$digest" ]] && continue
+                  if grep -qxF "$digest" "$referenced_file"; then
+                    echo "  Skip huérfano ${digest:0:19}… (hijo de un índice etiquetado)"
+                    continue
+                  fi
+                  # Al revés que arriba: si la fecha no parsea, NO se borra.
+                  upd_epoch=$(date -d "$updated" +%s 2>/dev/null || echo "")
+                  if [[ -z "$upd_epoch" ]]; then
+                    echo "  Skip huérfano ${digest:0:19}… (lastUpdateTime '$updated' no parseable)"
+                    continue
+                  fi
+                  (( upd_epoch > cutoff )) && continue
+                  if [[ "$DRY_RUN" == "true" ]]; then
+                    echo "  [DRY-RUN] purgaría huérfano: ${full}@${digest}"
+                  else
+                    echo "  Purgando huérfano: ${full}@${digest}"
+                    az acr repository delete -n "$ACR" --image "${full}@${digest}" --yes >/dev/null
+                  fi
+                  purged_count=$((purged_count + 1))
+                done < <(az acr manifest list-metadata -r "$ACR" -n "$full" --orderby time_desc \
+                           --query "[?tags[0] == null].[digest, lastUpdateTime]" -o tsv 2>/dev/null || true)
+              fi
             fi
 
             # Aserción: la retención garantizada se cumplió de hecho, no sólo
@@ -356,7 +385,7 @@ jobs:
             echo ""
             echo "- Modo: $mode"
             echo "- Dry-run: \`$DRY_RUN\`"
-            echo "- Retención garantizada: última \`pr-*\` + 3 últimas \`main-*\` por repositorio"
+            echo "- Retención garantizada: última \`pr-*\` + 3 últimas \`main-*\` por repositorio (piso; los \`main-*\` no se podan)"
             echo "- Tags eliminados: **$COUNT**"
             echo "- Manifests huérfanos purgados: **$PURGED**"
             if [[ -n "$DETAIL" ]]; then
