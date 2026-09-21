@@ -282,6 +282,16 @@ jobs:
           printf '%s\n' "${VIVOS_DEV:-}" "${VIVOS_PROD:-}" \
             | grep -v '^$' | sort -u > "$desplegado_file" || true
 
+          # Guarda de formato. Si los jobs que leen los swarms cambian su salida
+          # y dejan de emitir `<repo>:<tag>`, el cruce de abajo no matchea nada
+          # y la poda se quedaría sin su exclusión — en silencio, que es
+          # exactamente el modo de fallo que esta exclusión existe para evitar.
+          if [[ -s "$desplegado_file" ]] && grep -qvE '^[^:]+:[^:]+$' "$desplegado_file"; then
+            echo "::error::Los tags desplegados no vienen en la forma '<repo>:<tag>':"
+            grep -vE '^[^:]+:[^:]+$' "$desplegado_file" | sed 's/^/  /'
+            exit 1
+          fi
+
           poda_main=0
           if [[ "${PODA_MAIN_HABILITADA:-false}" == "true" ]]; then
             if [[ -s "$desplegado_file" ]]; then
@@ -330,8 +340,19 @@ jobs:
             fi
             # Todo lo que un swarm tiene corriendo, sea `main-*`, `pr-*` o lo
             # que sea: si está desplegado, no se toca.
-            if [[ -s "$desplegado_file" ]]; then
-              grep -xF -f "$desplegado_file" <<< "$tags_desc" >> "$protected_file" || true
+            #
+            # El archivo trae `<repo>:<tag>`, no el tag suelto: dos servicios
+            # distintos del mismo BC comparten el `main-<sha7>` del commit que
+            # los construyó, así que sin el repositorio no se puede saber a cuál
+            # pertenece. Acá se extraen los tags de ESTE repositorio, con
+            # comparación de prefijo exacta (`index`), no regex: un punto en el
+            # nombre del repositorio haría de comodín en un `sed`/`grep -E`.
+            desplegado_repo=$(mktemp)
+            awk -v r="${repo}:" 'index($0, r) == 1 { print substr($0, length(r) + 1) }' \
+              "$desplegado_file" > "$desplegado_repo"
+            if [[ -s "$desplegado_repo" ]]; then
+              echo "  Desplegado en algún ambiente: $(tr '\n' ' ' < "$desplegado_repo")"
+              grep -xF -f "$desplegado_repo" <<< "$tags_desc" >> "$protected_file" || true
             fi
             # Los alias mutables (`pr-{N}`, `main-latest`) apuntan al mismo
             # manifest que su inmutable, así que viajan con él.
