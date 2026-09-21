@@ -500,12 +500,27 @@ jobs:
               # que alguien necesite re-pull. Con la lista incompleta NO se purga.
               referenced_file=$(mktemp)
               refs_fail_file=$(mktemp)
-              if [[ -n "$tags_desc" ]]; then
-                grep -v '^$' <<< "$tags_desc" \
+
+              # Se relee el estado del repositorio: `tags_desc` es de ANTES del
+              # bucle de untag y ya no describe la realidad. Resolver un tag que
+              # este mismo run acaba de quitar falla siempre, se contabiliza como
+              # fallo de resolución y la purga se salta — o sea que bastaba UN
+              # untag para que la purga no corriera nunca más.
+              if ! tags_vigentes=$(az acr repository show-tags -n "$ACR" --repository "$full" -o tsv 2>&1); then
+                echo "::warning::$full: no se pudieron releer los tags tras el untag ($tags_vigentes). Purga de huérfanos OMITIDA en este repositorio."
+                printf 'relectura-de-tags\n' >> "$refs_fail_file"
+                tags_vigentes=""
+              fi
+
+              if [[ -n "$tags_vigentes" ]]; then
+                grep -v '^$' <<< "$tags_vigentes" \
                   | xargs -r -P 6 -I{} bash -c '
                       if out=$(az acr manifest show -r "$0" -n "$1:$3" -o json 2>/dev/null); then
                         jq -r ".manifests[]?.digest" <<< "$out" 2>/dev/null \
                           || printf "%s\n" "$3" >> "$2"
+                      elif ! az acr repository show-tags -n "$0" --repository "$1" -o tsv 2>/dev/null \
+                             | grep -qxF "$3"; then
+                        : # el tag ya no existe (carrera con otro run): no hay índice que proteger
                       else
                         printf "%s\n" "$3" >> "$2"
                       fi' \
