@@ -115,12 +115,18 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
-    name: docker stack deploy ${{ inputs.stack_name }}
-    runs-on:
-      group: ${{ inputs.runner_group }}
-      labels: [self-hosted, azure, swarm-deploy]
-    timeout-minutes: 15
+  # Los dos gates viven en un JOB APARTE, no como primeros steps del deploy, y
+  # `deploy` depende de él. La razón es que el job de deploy tiene steps con
+  # `if: always()` —el GC de Swarm secrets, que ejecuta `docker secret rm`— que
+  # se ejecutarían igual tras un gate denegado: el run quedaría rojo pero habría
+  # tocado el Swarm de todas formas. Con el gate en su propio job, un veredicto
+  # negativo deja `deploy` en skipped y NADA llega al runner self-hosted.
+  # Corre en runner hospedado (como la réplica manual del gate en los callers):
+  # solo necesita bash y `gh api`.
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       # Gate A5 de actor autorizado: primero de todo y fail-closed, antes del
       # checkout y de cualquier cosa que toque Azure o el Swarm.
@@ -268,6 +274,15 @@ jobs:
           fi
           echo "Coherencia ambiente↔recursos OK (stack_environment='${STACK_ENV}')"
 
+
+  deploy:
+    name: docker stack deploy ${{ inputs.stack_name }}
+    needs: gate
+    runs-on:
+      group: ${{ inputs.runner_group }}
+      labels: [self-hosted, azure, swarm-deploy]
+    timeout-minutes: 15
+    steps:
       - name: Checkout
         uses: actions/checkout@v7
 

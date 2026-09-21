@@ -187,7 +187,14 @@ Despliega un stack a Docker Swarm.
 |---|---|---|
 | `ACTOR_GATE_TOKEN` | no | Token con `Organization members: Read` para validar la membresía en el team. Obligatorio cuando `authorized_actor_team` viene poblado; el gate falla cerrado si falta. El `GITHUB_TOKEN` del run **no** sirve. |
 
-**Gate de coherencia ambiente↔recursos (primer step, fail-closed).** El reusable
+**Los dos gates corren en un job propio (`gate`, runner hospedado) del que
+depende el job de deploy**, no como primeros steps de este. El job de deploy
+tiene steps con `if: always()` —el GC de Swarm secrets, que ejecuta
+`docker secret rm`— que se ejecutarían igual tras un gate denegado: el run
+quedaría rojo pero habría tocado el Swarm. Con el gate aparte, un veredicto
+negativo deja `deploy` en *skipped* y nada llega al runner self-hosted.
+
+**Gate de coherencia ambiente↔recursos (fail-closed).** El reusable
 despliega dev y prod con el mismo código: todo el aislamiento vive en los inputs
 del caller, así que un caller que dice `prod` pero pasa el Key Vault y el runner
 de dev materializaría secretos de dev en la VM de dev y se reportaría como prod.
@@ -203,9 +210,10 @@ registry propio y reusa `cr<bc>deveus2001` —con marcador `dev`— también en 
 
 <a id="gate-a5"></a>
 **Gate A5 de actor autorizado (opt-in, fail-closed).** Mismo control que
-`_reusable-terraform-apply.yml`: con `authorized_actor_team` poblado, el primer
-step valida —antes del checkout y de tocar el Swarm— que `github.actor` y, en un
-re-run, también `github.triggering_actor` sean miembros **activos** del team; y
+`_reusable-terraform-apply.yml`: con `authorized_actor_team` poblado, el job
+`gate` valida —antes de que el deploy llegue siquiera al runner— que
+`github.actor` y, en un re-run, también `github.triggering_actor` sean miembros
+**activos** del team; y
 si el ambiente es `prod`, que el run venga por `workflow_dispatch` desde
 `refs/heads/main`. Requiere el secret `ACTOR_GATE_TOKEN`; sin él deniega.
 
@@ -262,7 +270,7 @@ Build + test + deploy de un SPA al Storage Account static website. Sigue el patr
 |---|---|---|
 | `Key Vault Secrets User` | KV de environment (`kv-oxp-dev-eus2-001`) | ✅ Asignado por `module.key_vault.vm_secrets_user` |
 | `Storage Blob Data Contributor` | SA compartido de fronts del plane (`stfrontappldeveus2001`, RG `rg-appl-dev-eus2-001`) | ⚠️ **Pendiente** — hoy ese rol lo tiene el SP de tfops, no la MI de la VM del BC. Asignarlo manualmente vía `az role assignment create` antes del primer deploy de cada BC (ver §5b paso 2). |
-| `authorized_actor_team` | string | `""` | Slug de un team de la org. Poblado ⇒ activa el **gate A5 de actor autorizado**, idéntico al de `_reusable-deploy-swarm.yml` ([detalle](#gate-a5)): primer step del job `build`, antes del checkout y de cualquier build o publicación. Requiere el secret `ACTOR_GATE_TOKEN` (`required: false`; sin él el gate deniega). Vacío ⇒ sin gate. |
+| `authorized_actor_team` | string | `""` | Slug de un team de la org. Poblado ⇒ activa el **gate A5 de actor autorizado**, idéntico al de `_reusable-deploy-swarm.yml` ([detalle](#gate-a5)): primer step del job `build`, antes del checkout y de cualquier build o publicación. Aquí no hace falta job aparte: `deploy` hace `needs: build`, así que un gate denegado deja el job self-hosted en *skipped*, y `build` no tiene steps con `always()`. Requiere el secret `ACTOR_GATE_TOKEN` (`required: false`; sin él el gate deniega). Vacío ⇒ sin gate. |
 
 ### `_reusable-nuget-publish.yml`
 
