@@ -161,6 +161,12 @@ jobs:
           deleted_count=0
           purged_count=0
           deleted_file=$(mktemp)
+          untag_fail_file=$(mktemp)
+          # Cortocircuito: si el ACR deja de responder, reintentar tag por tag
+          # sólo alarga el job hasta el timeout. A partir de este número de
+          # fallos SEGUIDOS se deja de intentar y se reporta.
+          UNTAG_FAIL_STREAK_MAX=5
+          untag_fail_streak=0
 
           while IFS= read -r repo; do
             [[ -z "$repo" ]] && continue
@@ -261,13 +267,39 @@ jobs:
                 # así que aquel borrado se llevaba en cascada el `main-<X>` que
                 # el deploy tenía vivo. El espacio lo recupera la purga de
                 # manifests huérfanos, más abajo.
-                if ! err=$(az acr repository untag -n "$ACR" --image "${full}:${tag}" 2>&1 >/dev/null); then
+                #
+                # Un fallo transitorio —DNS del runner, throttling del ACR— NO
+                # aborta el barrido. Se reintenta con backoff y, si persiste, el
+                # tag se anota y se sigue con el resto; el job falla AL FINAL con
+                # la lista. Antes cualquier error hacía `exit 1` en el acto y el
+                # barrido quedaba a medias, para volver a fallar en el mismo
+                # punto la semana siguiente: así croxpdeveus2001 encadenó cuatro
+                # semanas sin limpiar y llegó a 495 GB sobre una cuota de 10 GB.
+                untag_ok=0
+                for intento in 1 2 3; do
+                  if err=$(az acr repository untag -n "$ACR" --image "${full}:${tag}" 2>&1 >/dev/null); then
+                    untag_ok=1; break
+                  fi
                   if grep -qiE "(does not exist|TagNotFound|not found)" <<< "$err"; then
                     echo "    (ya no existe — carrera con otro run)"
-                  else
-                    echo "::error::Fallo al untaggear ${full}:${tag}: $err"
-                    exit 1
+                    untag_ok=1; break
                   fi
+                  if (( intento < 3 )); then
+                    echo "    intento ${intento}/3 falló, reintento en $(( intento * 5 ))s: $err"
+                    sleep $(( intento * 5 ))
+                  fi
+                done
+                if (( untag_ok == 1 )); then
+                  untag_fail_streak=0
+                else
+                  echo "::warning::No se pudo untaggear ${full}:${tag} tras 3 intentos: $err"
+                  printf '%s\n' "${full}:${tag}" >> "$untag_fail_file"
+                  untag_fail_streak=$(( untag_fail_streak + 1 ))
+                  if (( untag_fail_streak >= UNTAG_FAIL_STREAK_MAX )); then
+                    echo "::error::${UNTAG_FAIL_STREAK_MAX} fallos seguidos de untag: el ACR no responde. Se abandona el barrido."
+                    break 2
+                  fi
+                  continue
                 fi
               fi
               echo "- \`${full}:${tag}\`" >> "$deleted_file"
@@ -362,7 +394,18 @@ jobs:
             echo "list<<EOF"
             cat "$deleted_file" 2>/dev/null || true
             echo "EOF"
+            echo "untag_failed<<EOF"
+            cat "$untag_fail_file" 2>/dev/null || true
+            echo "EOF"
           } >> "$GITHUB_OUTPUT"
+
+          # El job falla DESPUÉS de haber barrido todo lo que sí se pudo y de
+          # haber publicado los outputs, para que el resumen quede completo.
+          if [[ -s "$untag_fail_file" ]]; then
+            echo "::error::$(wc -l < "$untag_fail_file" | tr -d ' ') tag(s) no se pudieron untaggear; el resto del barrido sí se completó ($deleted_count tags eliminados, $purged_count manifests purgados):"
+            sed 's/^/  - /' "$untag_fail_file"
+            exit 1
+          fi
 
       - name: Resumen
         if: always()
@@ -374,6 +417,7 @@ jobs:
           COUNT: ${{ steps.cleanup.outputs.count || 0 }}
           PURGED: ${{ steps.cleanup.outputs.purged || 0 }}
           DETAIL: ${{ steps.cleanup.outputs.list }}
+          UNTAG_FAILED: ${{ steps.cleanup.outputs.untag_failed }}
         run: |
           if [[ -n "$PR_NUMBER" ]]; then
             mode="PR #$PR_NUMBER"
@@ -392,5 +436,15 @@ jobs:
               echo ""
               echo "### Detalle"
               echo "$DETAIL"
+            fi
+            if [[ -n "$UNTAG_FAILED" ]]; then
+              echo ""
+              echo "### Tags que no se pudieron untaggear"
+              echo ""
+              echo "Fallaron los 3 intentos. El resto del barrido sí se completó; estos se reintentan en la corrida siguiente."
+              echo ""
+              while IFS= read -r t; do
+                [[ -n "$t" ]] && echo "- \`$t\`"
+              done <<< "$UNTAG_FAILED"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
