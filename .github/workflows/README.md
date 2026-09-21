@@ -59,8 +59,8 @@ Mantener estos nombres estables es contrato público: cambiarlos rompe los Rules
 | `_reusable-bump-and-tag.yml` | `Bump SemVer + tag (reusable)` | Calcula siguiente SemVer consultando nuget.org, crea y empuja tag git, opcionalmente abre GitHub Release. | `package_id`, `tag_prefix`, `bump_type`, `initial_version`, `create_github_release` |
 | `_reusable-cleanup-acr-pr.yml` | `Cleanup ACR — tags de PR (reusable)` | Borra tags `pr-*` huérfanos en ACR (modo dirigido por PR cerrado, o barrido por edad). | `acr_name`, `repository_prefix`, `repositories_json`, `pr_number`, `keep_sha7` |
 | `_reusable-dependency-review.yml` | `Dependency Review` | Bloquea PRs que introducen dependencias vulnerables o con licencias prohibidas (ADR 0002 E.4). | `fail-on-severity`, `deny-licenses` |
-| `_reusable-deploy-front.yml` | `Deploy Front estático (reusable)` | Despliega SPA Bun a Storage Account `$web` con activación atómica y env.js generado desde Key Vault. | `app_name`, `web_endpoint`, `storage_account`, `key_vault_name`, `environment`, `github_packages`, `run_test`, `app_base_files` |
-| `_reusable-deploy-swarm.yml` | `Deploy a Docker Swarm (reusable)` | Despliega un stack Compose a un Docker Swarm self-hosted inyectando tags por servicio. | `stack_file`, `stack_name`, `image_tag`, `image_tags_json`, `acr_name`, `stack_environment` |
+| `_reusable-deploy-front.yml` | `Deploy Front estático (reusable)` | Despliega SPA Bun a Storage Account `$web` con activación atómica y env.js generado desde Key Vault. | `app_name`, `web_endpoint`, `storage_account`, `key_vault_name`, `environment`, `github_packages`, `run_test`, `app_base_files`, `authorized_actor_team` + secret `ACTOR_GATE_TOKEN` |
+| `_reusable-deploy-swarm.yml` | `Deploy a Docker Swarm (reusable)` | Despliega un stack Compose a un Docker Swarm self-hosted inyectando tags por servicio. Valida coherencia ambiente↔recursos y, opt-in, el gate A5 de actor autorizado. | `stack_file`, `stack_name`, `image_tag`, `image_tags_json`, `acr_name`, `stack_environment`, `runner_group`, `authorized_actor_team` + secret `ACTOR_GATE_TOKEN` |
 | `_reusable-docker-build-push.yml` | `Build & Push Docker (reusable)` | Build multi-imagen contra ACR con alias mutables derivados del contexto (PR / main / manual). | `images_json`, `acr_name`, `repository_prefix`, `ref_context_override`, `mutable_alias_override` |
 | `_reusable-nuget-publish.yml` | `NuGet publish (reusable)` | Empaqueta un `.csproj` y publica al feed NuGet configurado (default nuget.org). | `project_path`, `package_version`, `dotnet_version`, `nuget_source` + secret `NUGET_API_KEY` |
 | `_reusable-nuget-publish-batch.yml` | `NuGet publish batch (reusable)` | **Estándar de release NuGet (lockstep):** publica todos los paquetes del catálogo con UNA versión (un tag `v<X>`), en paralelo. Sin anclas de dependencias internas. | `bump_type`, `version`, `tag_prefix`, `catalog_path`, `create_github_release` + secret `NUGET_API_KEY` |
@@ -181,8 +181,20 @@ Despliega un stack a Docker Swarm.
 | `secret_names` | string | `""` | Lista separada por espacios de nombres KV a materializar. Vacío deshabilita. |
 | `swarm_secret_prefix` | string | **requerido** | Prefijo del nombre del Swarm secret (`<prefix>_<snake>_v<sha8>`). Usado también para identificar secrets propios al hacer GC. |
 | `runner_group` | string | **requerido** | Runner group self-hosted donde corre el job. El aislamiento por BC se hace exclusivamente por aquí. |
+| `authorized_actor_team` | string | `""` | Slug de un team de la org. Poblado ⇒ activa el gate A5 de actor autorizado (abajo). Vacío ⇒ sin gate. |
 
-**Gate de coherencia ambiente↔recursos (primer step, fail-closed).** El reusable
+| Secret | Requerido | Descripción |
+|---|---|---|
+| `ACTOR_GATE_TOKEN` | no | Token con `Organization members: Read` para validar la membresía en el team. Obligatorio cuando `authorized_actor_team` viene poblado; el gate falla cerrado si falta. El `GITHUB_TOKEN` del run **no** sirve. |
+
+**Los dos gates corren en un job propio (`gate`, runner hospedado) del que
+depende el job de deploy**, no como primeros steps de este. El job de deploy
+tiene steps con `if: always()` —el GC de Swarm secrets, que ejecuta
+`docker secret rm`— que se ejecutarían igual tras un gate denegado: el run
+quedaría rojo pero habría tocado el Swarm. Con el gate aparte, un veredicto
+negativo deja `deploy` en *skipped* y nada llega al runner self-hosted.
+
+**Gate de coherencia ambiente↔recursos (fail-closed).** El reusable
 despliega dev y prod con el mismo código: todo el aislamiento vive en los inputs
 del caller, así que un caller que dice `prod` pero pasa el Key Vault y el runner
 de dev materializaría secretos de dev en la VM de dev y se reportaría como prod.
@@ -195,6 +207,33 @@ A5 de `_reusable-terraform-plan.yml` (match en minúsculas):
 
 `acr_name` queda fuera a propósito: por la decisión **D-ACR** prod no tiene
 registry propio y reusa `cr<bc>deveus2001` —con marcador `dev`— también en prod.
+
+<a id="gate-a5"></a>
+**Gate A5 de actor autorizado (opt-in, fail-closed).** Mismo control que
+`_reusable-terraform-apply.yml`: con `authorized_actor_team` poblado, el job
+`gate` valida —antes de que el deploy llegue siquiera al runner— que
+`github.actor` y, en un re-run, también `github.triggering_actor` sean miembros
+**activos** del team; y
+si el ambiente es `prod`, que el run venga por `workflow_dispatch` desde
+`refs/heads/main`. Requiere el secret `ACTOR_GATE_TOKEN`; sin él deniega.
+
+Se activa **solo** por el input, a diferencia del gemelo de Terraform que además
+lo activa con `environment == 'prod'`. Es una diferencia de migración, no de
+criterio: los callers prod de swarm y de front llevan hoy el gate como réplica
+manual en un job propio (un job `uses:` no admite `steps:`) y ninguno pasa el
+secret, así que el invariante `prod ⇒ gate` los denegaría a todos de golpe. El
+cuerpo del step sí es el mismo, incluido el chequeo `prod ⇒ team obligatorio`
+—hoy inalcanzable—, para que activar el invariante sea después cambiar una sola
+línea. Un caller que conserve su réplica y además pase el input evalúa el mismo
+predicado dos veces, con el mismo veredicto.
+
+Forma de uso en el caller (idéntica a la de los apply prod de infra):
+
+```yaml
+with:
+  authorized_actor_team: prod-infra-approvers
+secrets: inherit
+```
 
 ### `_reusable-deploy-front.yml`
 
@@ -231,6 +270,7 @@ Build + test + deploy de un SPA al Storage Account static website. Sigue el patr
 |---|---|---|
 | `Key Vault Secrets User` | KV de environment (`kv-oxp-dev-eus2-001`) | ✅ Asignado por `module.key_vault.vm_secrets_user` |
 | `Storage Blob Data Contributor` | SA compartido de fronts del plane (`stfrontappldeveus2001`, RG `rg-appl-dev-eus2-001`) | ⚠️ **Pendiente** — hoy ese rol lo tiene el SP de tfops, no la MI de la VM del BC. Asignarlo manualmente vía `az role assignment create` antes del primer deploy de cada BC (ver §5b paso 2). |
+| `authorized_actor_team` | string | `""` | Slug de un team de la org. Poblado ⇒ activa el **gate A5 de actor autorizado**, idéntico al de `_reusable-deploy-swarm.yml` ([detalle](#gate-a5)): primer step del job `build`, antes del checkout y de cualquier build o publicación. Aquí no hace falta job aparte: `deploy` hace `needs: build`, así que un gate denegado deja el job self-hosted en *skipped*, y `build` no tiene steps con `always()`. Requiere el secret `ACTOR_GATE_TOKEN` (`required: false`; sin él el gate deniega). Vacío ⇒ sin gate. |
 
 ### `_reusable-nuget-publish.yml`
 

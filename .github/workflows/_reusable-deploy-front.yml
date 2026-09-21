@@ -167,6 +167,25 @@ on:
           hace exclusivamente vía runner group (ver `bounded-contexts.yml`).
         type: string
         required: true
+      authorized_actor_team:
+        description: |
+          Slug de un team de la org. Si viene poblado, el deploy valida que
+          `github.actor` — y en un RE-RUN también `github.triggering_actor`,
+          cuando viene informado y difiere — sea miembro ACTIVO de ese team
+          antes de construir o publicar nada, y falla si no (gate A5). Requiere
+          el secret ACTOR_GATE_TOKEN. Vacío → sin gate (comportamiento actual).
+        type: string
+        required: false
+        default: ""
+    secrets:
+      ACTOR_GATE_TOKEN:
+        description: |
+          Token con permiso de lectura de members de la org (fine-grained PAT
+          'Organization members: Read' o token de App) para validar la membresía
+          de `github.actor` en `authorized_actor_team` vía API. Obligatorio
+          cuando `authorized_actor_team` viene poblado; el gate falla cerrado si
+          falta. El GITHUB_TOKEN del run NO sirve (no lee teams de la org).
+        required: false
 
 # La auth a Azure es por Managed Identity de la VM (no OIDC), así que no se
 # necesita `id-token: write`. `contents: read` para `actions/checkout`;
@@ -184,6 +203,99 @@ jobs:
       run:
         working-directory: ${{ inputs.working_directory }}
     steps:
+      # Gate A5 de actor autorizado: primer step del PRIMER job, antes del
+      # checkout y de cualquier build o publicación. `working-directory` se
+      # sobrescribe al workspace porque el default del job apunta a una ruta del
+      # repo que aún no existe (el checkout viene después).
+      #
+      # OPT-IN: el `if:` se activa SOLO con `authorized_actor_team` poblado, a
+      # diferencia del gate gemelo de `_reusable-terraform-apply.yml`, que además
+      # lo activa con `environment == 'prod'`. La razón es de migración, no de
+      # criterio: los callers prod de front llevan hoy el gate como una RÉPLICA
+      # manual en un job propio (un job `uses:` no admite `steps:`) y ninguno
+      # pasa `ACTOR_GATE_TOKEN` al reusable, así que el invariante `prod ⇒ gate`
+      # los denegaría a todos de golpe. El cuerpo del step SÍ es el mismo
+      # —incluido el chequeo `prod ⇒ team obligatorio`, hoy inalcanzable— para
+      # que, cuando los callers hayan migrado, activar el invariante sea cambiar
+      # solo esta línea `if:` y ya no rompa a nadie.
+      #
+      # Idempotente con la réplica: un caller que conserve su job `gate` y además
+      # pase el input evalúa el mismo predicado dos veces, con el mismo veredicto.
+      - name: Gate de actor autorizado
+        if: inputs.authorized_actor_team != ''
+        working-directory: ${{ github.workspace }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.ACTOR_GATE_TOKEN }}
+          ORG: ${{ github.repository_owner }}
+          TEAM: ${{ inputs.authorized_actor_team }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          # Validamos AMBOS: `actor` es quien disparó originalmente; en un
+          # RE-RUN, `actor` conserva ese valor y `triggering_actor` es quien
+          # re-ejecuta. Exigir que los dos estén en el team cierra el bypass de
+          # "un autorizado dispara, un no-autorizado re-ejecuta".
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          # GitHub compara strings case-insensitive en `if:` (así entró este
+          # step) pero bash no. El valor canónico es minúsculas y se EXIGE del
+          # caller (fail-fast): GitHub Expressions no tiene lower(), así que un
+          # "PROD" crudo llegaría intacto al `concurrency.group` y al resumen.
+          env_lower="$(printf '%s' "$ENVIRONMENT" | tr '[:upper:]' '[:lower:]')"
+          if [ "$ENVIRONMENT" != "$env_lower" ]; then
+            echo "::error::environment '${ENVIRONMENT}' debe ir en minúsculas (dev|prod). Deploy denegado (fail-closed)."
+            exit 1
+          fi
+          ENVIRONMENT="$env_lower"
+
+          # prod ⇒ gate obligatorio: sin team declarado, denegar (fail-closed).
+          if [ "$ENVIRONMENT" = "prod" ] && [ -z "${TEAM:-}" ]; then
+            echo "::error::environment=prod exige 'authorized_actor_team'. Deploy denegado (fail-closed)."
+            exit 1
+          fi
+
+          # prod ⇒ solo desde main (A5 'workflow_dispatch sobre main'). Defensa
+          # en profundidad: la red primaria es la deployment branch policy `main`
+          # del Environment prod (pieza 1), pero no dependemos solo de ella.
+          if [ "$ENVIRONMENT" = "prod" ] && [ "$REF" != "refs/heads/main" ]; then
+            echo "::error::deploy prod solo desde refs/heads/main (ref actual: ${REF}). Deploy denegado."
+            exit 1
+          fi
+
+          # prod ⇒ solo workflow_dispatch (A5 'acto deliberado'): un caller que
+          # conecte el deploy prod a `push` desplegaría automático post-merge si
+          # el merger es del team — el gate de actor no distingue ese caso, este
+          # check sí. `event_name` es el evento del workflow CALLER.
+          if [ "$ENVIRONMENT" = "prod" ] && [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "::error::deploy prod solo por workflow_dispatch (evento actual: ${EVENT_NAME}). Deploy denegado (fail-closed)."
+            exit 1
+          fi
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::gate activo pero falta el secret ACTOR_GATE_TOKEN (el caller debe pasarlo, p. ej. con \`secrets: inherit\`). Deploy denegado (fail-closed)."
+            exit 1
+          fi
+
+          # Verifica membresía ACTIVA en el team para cada actor relevante.
+          check_member() {
+            local who="$1"
+            local st
+            st="$(gh api "orgs/${ORG}/teams/${TEAM}/memberships/${who}" --jq .state 2>/dev/null || true)"
+            if [ "$st" != "active" ]; then
+              echo "::error::'${who}' no es miembro activo del team '${ORG}/${TEAM}'. Deploy denegado."
+              exit 1
+            fi
+          }
+          check_member "$ACTOR"
+          if [ -n "${TRIGGERING_ACTOR:-}" ] && [ "$TRIGGERING_ACTOR" != "$ACTOR" ]; then
+            check_member "$TRIGGERING_ACTOR"
+          fi
+          echo "Actor(es) autorizado(s) por el team '${ORG}/${TEAM}': ${ACTOR}${TRIGGERING_ACTOR:+, ${TRIGGERING_ACTOR}}."
+
       - name: Checkout código del front
         uses: actions/checkout@v7
 
