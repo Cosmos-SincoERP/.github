@@ -271,6 +271,9 @@ jobs:
           # manifest sin tag ya no puede ser el de un servicio vivo y el margen
           # sólo tiene que cubrir operaciones en vuelo.
           PURGE_UNTAGGED_AFTER_DAYS=7
+          # Paralelismo del borrado por digest. Deliberadamente por debajo del
+          # `-P 6` del recorrido de referenciados: aquel sólo lee, éste borra.
+          PURGE_PARALLELISM=4
 
           # ── Conjunto desplegado ──────────────────────────────────────────
           # Tags que los swarms de dev y prod tienen corriendo AHORA, leídos con
@@ -532,6 +535,9 @@ jobs:
                 fail_n=$(wc -l < "$refs_fail_file" | tr -d ' ')
                 echo "::warning::$full: no se pudo resolver el manifest de ${fail_n} tag(s) ($(paste -sd' ' "$refs_fail_file")). Purga de huérfanos OMITIDA en este repositorio: con la lista de digests referenciados incompleta, un hijo de un índice vivo se vería como huérfano y el borrado por digest es irreversible."
               else
+                # Fase 1 — DECIDIR, secuencial. Barata (no hace red) y auditable:
+                # cada descarte queda explicado en el log, en orden.
+                purgar_file=$(mktemp)
                 while IFS=$'\t' read -r digest updated; do
                   [[ -z "$digest" ]] && continue
                   if grep -qxF "$digest" "$referenced_file"; then
@@ -545,15 +551,42 @@ jobs:
                     continue
                   fi
                   (( upd_epoch > cutoff )) && continue
-                  if [[ "$DRY_RUN" == "true" ]]; then
-                    echo "  [DRY-RUN] purgaría huérfano: ${full}@${digest}"
-                  else
-                    echo "  Purgando huérfano: ${full}@${digest}"
-                    az acr repository delete -n "$ACR" --image "${full}@${digest}" --yes >/dev/null
-                  fi
-                  purged_count=$((purged_count + 1))
+                  printf '%s\n' "$digest" >> "$purgar_file"
                 done < <(az acr manifest list-metadata -r "$ACR" -n "$full" --orderby time_desc \
                            --query "[?tags[0] == null].[digest, lastUpdateTime]" -o tsv 2>/dev/null || true)
+
+                # Fase 2 — BORRAR, en paralelo. Es el 85% del tiempo del job:
+                # 1047 purgas secuenciales a ~1.5 s cada una consumieron 26 de
+                # los 30 minutos del timeout en el primer barrido real de cont,
+                # que murió sin terminar. El borrado es independiente entre
+                # manifests, así que paralelizarlo no cambia ninguna decisión:
+                # la fase 1 ya decidió qué se borra y por qué.
+                #
+                # Menos paralelismo que el recorrido de referenciados (6): este
+                # bucle BORRA, y saturar el ACR acá cuesta más que ir lento.
+                n_purgar=$(wc -l < "$purgar_file" | tr -d ' ')
+                if (( n_purgar > 0 )); then
+                  if [[ "$DRY_RUN" == "true" ]]; then
+                    sed "s|^|  [DRY-RUN] purgaría huérfano: ${full}@|" "$purgar_file"
+                    purged_count=$(( purged_count + n_purgar ))
+                  else
+                    echo "  Purgando $n_purgar manifests huérfanos (paralelismo $PURGE_PARALLELISM)…"
+                    purga_fail_file=$(mktemp)
+                    xargs -r -P "$PURGE_PARALLELISM" -I{} bash -c '
+                        az acr repository delete -n "$0" --image "$1@$3" --yes >/dev/null 2>&1 \
+                          || printf "%s\n" "$3" >> "$2"' \
+                        "$ACR" "$full" "$purga_fail_file" {} < "$purgar_file" || true
+                    n_fail=$(wc -l < "$purga_fail_file" | tr -d ' ')
+                    purged_count=$(( purged_count + n_purgar - n_fail ))
+                    echo "  Purgados $(( n_purgar - n_fail )) de $n_purgar"
+                    if (( n_fail > 0 )); then
+                      # Un borrado que falla no pierde nada: el manifest sigue
+                      # ahí y el barrido siguiente lo reintenta. Por eso avisa
+                      # en vez de fallar el job.
+                      echo "::warning::$full: $n_fail de $n_purgar manifests huérfanos no se pudieron purgar. No hay pérdida de datos; se reintentan en el barrido siguiente."
+                    fi
+                  fi
+                fi
               fi
             fi
 
