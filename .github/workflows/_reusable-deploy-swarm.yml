@@ -51,7 +51,11 @@ on:
         required: false
         default: "{}"
       stack_environment:
-        description: "Etiqueta del ambiente para el resumen (dev/staging/prod)."
+        description: |
+          Ambiente objetivo (dev|prod). No es una etiqueta decorativa: el gate de
+          coherencia del primer step exige que `stack_file`, `key_vault_name` y
+          `runner_group` lleven marcador `prod` cuando vale `prod`, y que NO lo
+          lleven cuando vale otra cosa. `acr_name` queda fuera del gate (D-ACR).
         type: string
         required: false
         default: "dev"
@@ -99,6 +103,62 @@ jobs:
       labels: [self-hosted, azure, swarm-deploy]
     timeout-minutes: 15
     steps:
+      # Gate de coherencia ambiente↔recursos. Sin esto `stack_environment` es un
+      # rótulo cosmético: el reusable despliega dev y prod con el mismo código y
+      # todo el aislamiento vive en los inputs del caller, así que un caller prod
+      # con el Key Vault o el runner de dev materializa secretos de dev en la VM
+      # de dev y se reporta como prod. Misma forma que el gate A5 de
+      # `_reusable-terraform-plan.yml` (match en minúsculas, fail-closed) y en el
+      # primer step del job para morir antes de tocar Azure o el Swarm.
+      #
+      # `acr_name` NO se valida: por la decisión D-ACR prod no tiene registry
+      # propio y reusa `cr<bc>deveus2001` — con marcador `dev` — también en prod.
+      # Exigirle marcador `prod` rompería el deploy de producción de todos los BC.
+      - name: Validar coherencia ambiente↔recursos
+        shell: bash
+        env:
+          STACK_ENV: ${{ inputs.stack_environment }}
+          STACK_FILE: ${{ inputs.stack_file }}
+          KEY_VAULT: ${{ inputs.key_vault_name }}
+          RUNNER_GROUP: ${{ inputs.runner_group }}
+        run: |
+          set -euo pipefail
+
+          # El match se hace en minúsculas: los nombres de Key Vault y los
+          # runner groups son case-insensitive, y el caller puede escribir `Prod`.
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+          es_prod=false
+          if [ "$(lower "$STACK_ENV")" = "prod" ]; then
+            es_prod=true
+          fi
+
+          # Solo los recursos con una instancia por ambiente (ver D-ACR arriba).
+          RECURSOS=(
+            "stack_file=$STACK_FILE"
+            "key_vault_name=$KEY_VAULT"
+            "runner_group=$RUNNER_GROUP"
+          )
+
+          incoherentes=()
+          for par in "${RECURSOS[@]}"; do
+            marcado=false
+            case "$(lower "${par#*=}")" in
+              *prod*) marcado=true ;;
+            esac
+            [ "$marcado" = "$es_prod" ] || incoherentes+=("$par")
+          done
+
+          if [ ${#incoherentes[@]} -gt 0 ]; then
+            if [ "$es_prod" = true ]; then
+              echo "::error::stack_environment='${STACK_ENV}' exige recursos con marcador 'prod'; sin él: ${incoherentes[*]}. Denegado (fail-closed)."
+            else
+              echo "::error::recurso con marcador 'prod' (${incoherentes[*]}) exige stack_environment=prod, y llegó stack_environment='${STACK_ENV}'. Denegado (fail-closed)."
+            fi
+            exit 1
+          fi
+          echo "Coherencia ambiente↔recursos OK (stack_environment='${STACK_ENV}')"
+
       - name: Checkout
         uses: actions/checkout@v7
 

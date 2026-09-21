@@ -173,13 +173,28 @@ Despliega un stack a Docker Swarm.
 | `stack_name` | string | **requerido** | Nombre del stack en Swarm. |
 | `image_tag` | string | `""` | Tag global para `${IMAGE_TAG}` (modo legado). Ignorado si se da `image_tags_json`. |
 | `image_tags_json` | string (JSON) | `{}` | Mapa `{servicio: tag}`. Cada servicio expone `IMAGE_TAG_<UPPER_SNAKE>`. Servicios omitidos toman el tag actual desplegado. Con `{}` y `image_tag=""` el reusable hace resync del stack file con todos los tags actuales de Swarm (útil para refrescar replicas/healthchecks sin cambios de imagen). |
-| `acr_name` | string | `croxpdeveus2001` | Para `az acr login`. |
-| `repository_prefix` | string | `oxp` | Inyectado como `${REPOSITORY_PREFIX}`. |
+| `acr_name` | string | **requerido** | Para `az acr login`. |
+| `repository_prefix` | string | **requerido** | Inyectado como `${REPOSITORY_PREFIX}`. |
 | `env_vars_json` | string (JSON) | `{}` | Variables extra para el compose. |
-| `stack_environment` | string | `dev` | Etiqueta para el step summary. |
-| `key_vault_name` | string | `kv-oxp-dev-eus2-001` | KV desde donde leer secretos. |
+| `stack_environment` | string | `dev` | Ambiente objetivo (`dev`\|`prod`). Etiqueta el step summary **y** alimenta el gate de coherencia (abajo). |
+| `key_vault_name` | string | **requerido** | KV desde donde leer secretos. |
 | `secret_names` | string | `""` | Lista separada por espacios de nombres KV a materializar. Vacío deshabilita. |
-| `swarm_secret_prefix` | string | `oxp` | Prefijo del nombre del Swarm secret (`<prefix>_<snake>_v<sha8>`). Usado también para identificar secrets propios al hacer GC. |
+| `swarm_secret_prefix` | string | **requerido** | Prefijo del nombre del Swarm secret (`<prefix>_<snake>_v<sha8>`). Usado también para identificar secrets propios al hacer GC. |
+| `runner_group` | string | **requerido** | Runner group self-hosted donde corre el job. El aislamiento por BC se hace exclusivamente por aquí. |
+
+**Gate de coherencia ambiente↔recursos (primer step, fail-closed).** El reusable
+despliega dev y prod con el mismo código: todo el aislamiento vive en los inputs
+del caller, así que un caller que dice `prod` pero pasa el Key Vault y el runner
+de dev materializaría secretos de dev en la VM de dev y se reportaría como prod.
+El gate lo impide antes de tocar Azure o el Swarm, con la misma forma que el gate
+A5 de `_reusable-terraform-plan.yml` (match en minúsculas):
+
+- `stack_environment: prod` exige marcador `prod` en `stack_file`, `key_vault_name`
+  y `runner_group`.
+- Cualquier otro `stack_environment` los exige **sin** marcador `prod`.
+
+`acr_name` queda fuera a propósito: por la decisión **D-ACR** prod no tiene
+registry propio y reusa `cr<bc>deveus2001` —con marcador `dev`— también en prod.
 
 ### `_reusable-deploy-front.yml`
 
