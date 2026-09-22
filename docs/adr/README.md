@@ -8,7 +8,7 @@ Estos ADRs documentan decisiones de **gobernanza operacional** de los repositori
 |---|---|---|
 | [0001](0001-marco-gobernanza-repositorios.md) | Marco de gobernanza y políticas de repositorios | `accepted` |
 | [0002](0002-politicas-repositorios-desarrollo.md) | Políticas de repositorios — ambiente de desarrollo | `accepted` |
-| [0003](0003-politicas-repositorios-produccion.md) | Políticas de repositorios — ambiente de producción | `proposed` |
+| [0003](0003-politicas-repositorios-produccion.md) | Políticas de repositorios — ambiente de producción | `accepted` |
 | [0004](0004-creacion-automatizada-repositorios.md) | Creación automatizada de repositorios | `proposed` |
 | [0005](0005-creacion-repos-scaffold-minimo.md) | Creación de repos: scaffold mínimo (baseline + seguridad); CI/CD deferido al onboarding | `proposed` |
 

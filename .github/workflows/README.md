@@ -57,15 +57,15 @@ Mantener estos nombres estables es contrato público: cambiarlos rompe los Rules
 | Workflow file | Check name | Propósito | Inputs principales |
 | --- | --- | --- | --- |
 | `_reusable-bump-and-tag.yml` | `Bump SemVer + tag (reusable)` | Calcula siguiente SemVer consultando nuget.org, crea y empuja tag git, opcionalmente abre GitHub Release. | `package_id`, `tag_prefix`, `bump_type`, `initial_version`, `create_github_release` |
-| `_reusable-cleanup-acr-pr.yml` | `Cleanup ACR — tags de PR (reusable)` | Borra tags `pr-*` huérfanos en ACR (modo dirigido por PR cerrado, o barrido por edad). | `acr_name`, `repository_prefix`, `repositories_json`, `pr_number`, `keep_sha7` |
-| `_reusable-dependency-review.yml` | `Dependency Review` | Bloquea PRs que introducen dependencias vulnerables o con licencias prohibidas (ADR 0002 E.4). | `fail-on-severity`, `deny-licenses` |
-| `_reusable-deploy-front.yml` | `Deploy Front estático (reusable)` | Despliega SPA Bun a Storage Account `$web` con activación atómica y env.js generado desde Key Vault. | `app_name`, `web_endpoint`, `storage_account`, `key_vault_name`, `environment`, `github_packages`, `run_test`, `app_base_files`, `authorized_actor_team` + secret `ACTOR_GATE_TOKEN` |
+| `_reusable-cleanup-acr-pr.yml` | `Cleanup ACR — tags de PR (reusable)` | Borra tags `pr-*` huérfanos en ACR (modo dirigido por PR cerrado, o barrido por edad). | `acr_name`, `repository_prefix`, `runner_group`, `repositories_json`, `pr_number`, `keep_sha7`, `runner_group_prod` |
+| `_reusable-dependency-review.yml` | `Dependency Review (trivy)` | Bloquea PRs cuyas dependencias tienen CVEs de la severidad configurada, con Trivy OSS (ADR 0002 E.4). | `severity`, `scan-type`, `ignore-unfixed` |
+| `_reusable-deploy-front.yml` | `Deploy Front estático (reusable)` | Despliega SPA Bun a Storage Account `$web` con activación atómica y env.js generado desde Key Vault. | `app_name`, `environment`, `storage_account_name`, `web_endpoint`, `key_vault_name`, `runner_group`, `github_packages`, `run_test`, `app_base_files`, `authorized_actor_team` + secret `ACTOR_GATE_TOKEN` |
 | `_reusable-deploy-swarm.yml` | `Deploy a Docker Swarm (reusable)` | Despliega un stack Compose a un Docker Swarm self-hosted inyectando tags por servicio. Valida coherencia ambiente↔recursos y, opt-in, el gate A5 de actor autorizado. | `stack_file`, `stack_name`, `image_tag`, `image_tags_json`, `acr_name`, `stack_environment`, `runner_group`, `authorized_actor_team` + secret `ACTOR_GATE_TOKEN` |
-| `_reusable-docker-build-push.yml` | `Build & Push Docker (reusable)` | Build multi-imagen contra ACR con alias mutables derivados del contexto (PR / main / manual). | `images_json`, `acr_name`, `repository_prefix`, `ref_context_override`, `mutable_alias_override` |
+| `_reusable-docker-build-push.yml` | `Build & Push Docker (reusable)` | Build multi-imagen contra ACR con alias mutables derivados del contexto (PR / main / manual). | `images_json`, `acr_name`, `repository_prefix`, `buildx_builder_name`, `runner_group`, `ref_context_override`, `mutable_alias_override` |
 | `_reusable-nuget-publish.yml` | `NuGet publish (reusable)` | Empaqueta un `.csproj` y publica al feed NuGet configurado (default nuget.org). | `project_path`, `package_version`, `dotnet_version`, `nuget_source` + secret `NUGET_API_KEY` |
 | `_reusable-nuget-publish-batch.yml` | `NuGet publish batch (reusable)` | **Estándar de release NuGet (lockstep):** publica todos los paquetes del catálogo con UNA versión (un tag `v<X>`), en paralelo. Sin anclas de dependencias internas. | `bump_type`, `version`, `tag_prefix`, `catalog_path`, `create_github_release` + secret `NUGET_API_KEY` |
 | `_reusable-npm-publish.yml` | `Publicar a <registro> (reusable)` | Publica una librería npm (no versiona): `build` + `changeset publish` (idempotente). Soporta npm público (secret `NPM_TOKEN`) y GitHub Packages (con el `GITHUB_TOKEN` del workflow). | `working_directory`, `bun_version`, `npm_registry`, `publish_command` + secret opcional `NPM_TOKEN` |
-| `_reusable-secret-scan.yml` | `Secret Scan (gitleaks)` | Mitigación open-source de secret scanning (gitleaks) para repos privados sin GHAS (ADR 0002 E.6). | `config-path` |
+| `_reusable-secret-scan.yml` | `Secret Scan (trufflehog)` | Mitigación open-source de secret scanning (TruffleHog OSS) para repos privados sin GHAS (ADR 0002 E.6). | `base`, `extra-args` |
 | `_reusable-tests-dotnet.yml` | `Tests .NET (reusable)` | Restore + build + test de soluciones .NET, con exclusión de proyectos opcional. Sirve los dos dialectos de `dotnet test` (VSTest y Microsoft Testing Platform), eligiendo según el `global.json` del consumidor. | `solution_path`, `working_directory`, `dotnet_version`, `configuration`, `excluded_projects`, `test_runner`, `mtp_test_args` |
 | `_reusable-ci-front.yml` | `CI Front (reusable)` | Lint + test + build de fronts SPA (Bun), cada step togglable. | `working_directory`, `bun_version`, `run_lint`, `run_test`, `run_build`, `github_packages` |
 | `_reusable-terraform-plan.yml` | `Terraform plan (reusable)` | Ciclo `terraform plan` de los `*.Infraestructura`: job `validate` sin secretos (corre en todo PR, incl. Dependabot) + job `plan` autenticado (OIDC, GitHub Environment del caller) que comenta el resultado en el PR. | `bounded_context`, `environment`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `comment_on_pr` + `secrets: inherit` |
@@ -198,11 +198,14 @@ Construye una matriz de imágenes Docker en self-hosted y las publica al ACR ví
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|
 | `images_json` | string (JSON) | **requerido** | Array `[{name, dockerfile, context}]`. |
-| `acr_name` | string | `croxpdeveus2001` | Nombre del ACR. |
-| `repository_prefix` | string | `oxp` | Prefijo del repo en ACR. |
-| `ref_context_override` | string | (auto) | Forzar contexto del tag inmutable. |
-| `mutable_alias_override` | string | (auto) | Forzar alias mutable. `none` deshabilita. |
-| `buildx_builder_name` | string | `oxp-builder` | Nombre del builder buildx reutilizable. Cambiar en contextos multi-dominio sobre la misma VM. |
+| `acr_name` | string | **requerido** | Nombre del ACR del BC (ej. `croxpdeveus2001`). |
+| `repository_prefix` | string | **requerido** | Prefijo del repo en ACR (ej. `oxp`). |
+| `buildx_builder_name` | string | **requerido** | Nombre del builder buildx reutilizable (ej. `oxp-builder`). Uno por BC: varios BCs pueden compartir VM. |
+| `runner_group` | string | **requerido** | Runner group self-hosted del BC donde corre el build/push (ej. `swarm-deploy-oxp`). |
+| `ref_context_override` | string | `""` (auto) | Forzar contexto del tag inmutable. |
+| `mutable_alias_override` | string | `""` (auto) | Forzar alias mutable. `none` deshabilita. |
+
+> `acr_name`, `repository_prefix`, `buildx_builder_name` y `runner_group` **no tienen default**: son valores del BC (ver [§9](#9-decisión-de-plataforma-vs-decisión-de-bounded-context)), no de la plataforma. Un caller que omita alguno no llega a correr: GitHub rechaza el run como `startup_failure`, sin log de job que diga cuál falta.
 
 | Output | Descripción |
 |---|---|
@@ -303,14 +306,20 @@ Build + test + deploy de un SPA al Storage Account static website. Sigue el patr
 |---|---|---|---|
 | `app_name` | string | **requerido** | Identificador corto (2-8 chars). Se usa para derivar el nombre de los secrets en KV (`front-<app>-...`). |
 | `environment` | string | **requerido** | Ambiente lógico (dev/qa/prod). Es además el **GitHub Environment del caller** que declara el job `deploy`: sus variables alimentan el `env.js` (ver «Fuente `vars`»). GitHub lo crea vacío si no existe. |
-| `storage_account_name` | string | **requerido** | SA compartido de fronts del plane: `stfrontappldeveus2001` (RG `rg-appl-dev-eus2-001`, infra de ApplicationPlane). |
-| `web_endpoint` | string | **requerido** | URL del web endpoint con el prefijo del front (`https://stfrontappldeveus2001.z20.web.core.windows.net/<app_name>/`). Usado para smoke test. |
-| `key_vault_name` | string | **requerido** | KV con los secretos de configuración del `env.js` (ej. `kv-oxp-dev-eus2-001`). |
+| `storage_account_name` | string | **requerido** | SA compartido de fronts del plane para el ambiente (ej. en dev: `stfrontappldeveus2001`, RG `rg-appl-dev-eus2-001`, infra de ApplicationPlane). |
+| `web_endpoint` | string | **requerido** | URL del web endpoint con el prefijo del front (ej. `https://stfrontappldeveus2001.z20.web.core.windows.net/<app_name>/`). Usado para smoke test. |
+| `key_vault_name` | string | **requerido** | KV del BC y del ambiente con los secretos de configuración del `env.js` (ej. `kv-oxp-dev-eus2-001`). |
+| `runner_group` | string | **requerido** | Runner group self-hosted del BC donde corre el job `deploy` (ej. `swarm-deploy-oxp`). |
 | `bun_version` | string | `latest` | Versión de Bun a instalar. |
 | `working_directory` | string | `.` | Directorio donde está `package.json` (y, debajo de él, `.deploy/env.js.tmpl`). |
 | `github_packages` | boolean | `false` | Si el front consume paquetes del org desde GitHub Packages. En `true`, el job `build` escribe un `.npmrc` autenticado con el `GITHUB_TOKEN` antes de `bun install` (el reusable declara `packages: read`). En `false`, sin cambios. |
 | `run_test` | boolean | `true` | Ejecutar `bun run test` en el job `build`. Ponerlo en `false` cuando la rama de deploy ya está gateada por un required check de CI que corre la suite completa (el Test del deploy sería redundante) o cuando la suite no cabe en el `timeout-minutes: 10` del job `build`. Default `true` → sin cambios para los fronts existentes. |
 | `app_base_files` | string | `""` | Lista separada por espacios de archivos del bundle a publicar también en la **raíz estable del front** (`$web/<app_name>/<archivo>`) con `no-cache`, además de su copia inmutable bajo `releases/<sha>/`. Para **archivos de contrato de descubrimiento** que otra app consume por URL fija sin SHA (ej. `intenciones.json` + `remoteEntry.js` del asistente transversal). Vacío → no-op. Rutas relativas a `dist/`; sin ruta absoluta ni `..`. |
+| `authorized_actor_team` | string | `""` | Slug de un team de la org. Poblado ⇒ activa el **gate A5 de actor autorizado**, idéntico al de `_reusable-deploy-swarm.yml` ([detalle](#gate-a5)): primer step del job `build`, antes del checkout y de cualquier build o publicación. Aquí no hace falta job aparte: `deploy` hace `needs: build`, así que un gate denegado deja el job self-hosted en *skipped*, y `build` no tiene steps con `always()`. Requiere el secret `ACTOR_GATE_TOKEN` (`required: false`; sin él el gate deniega). Vacío ⇒ sin gate **solo fuera de prod**: con `environment: prod` el gate es obligatorio. |
+
+| Secret | Requerido | Descripción |
+|---|---|---|
+| `ACTOR_GATE_TOKEN` | no | Igual que en `_reusable-deploy-swarm.yml`. Obligatorio cuando el gate está activo. |
 
 **Plantilla del `env.js`: propiedad de cada front**, en `<working_directory>/.deploy/env.js.tmpl` del repo del front. El reusable es **agnóstico al shape** del template: extrae los placeholders `${VAR_NAME}` con grep, deriva el nombre del secret en KV por convención y resuelve con `envsubst`.
 
@@ -318,17 +327,33 @@ Build + test + deploy de un SPA al Storage Account static website. Sigue el patr
 |---|---|
 | **Convención de naming** | `${VAR_NAME}` → `front-<app_name>-var-name` (lowercase, `_` → `-`). Ej: `${API_BASE_URL}` con `app_name: oxp` → `front-oxp-api-base-url`. |
 | **Escape hatch** | Archivo opcional `<working_directory>/.deploy/env.map` con `VAR=secret-name` por línea (soporta `#` comentarios). Permite mapear una var a un nombre de secret distinto del que daría la convención (ej. para reusar un secret compartido entre varios fronts). |
-| **Fuente `vars`** | Si un placeholder `${VAR_NAME}` existe como variable de configuración visible al caller (Environment `environment` del repo del front, repo u org, con la precedencia de GitHub), su valor **gana** sobre el KV y el secret no se consulta. El log muestra la fuente de cada placeholder (`← vars` / `→ <secret>`), nunca el valor. Requiere `jq` en el runner; sin `jq`, un placeholder presente en `vars` aborta. ⚠️ Ninguna variable de org o de repo debe llamarse como un placeholder salvo que se quiera ese efecto (en org, afecta a todos los fronts). |
+| **Fuente `vars`** | Si un placeholder `${VAR_NAME}` existe como variable de configuración visible al caller (Environment `environment` del repo del front, repo u org, con la precedencia de GitHub), su valor **gana** sobre el KV y el secret no se consulta. El log muestra la fuente de cada placeholder (`← vars` / `→ <secret>`), nunca el valor. Requiere `jq` en el runner; sin `jq`, un placeholder presente en `vars` aborta. ⚠️ Ninguna variable de org o de repo debe llamarse como un placeholder salvo que se quiera ese efecto (en org, afecta a todos los fronts). Ver [la trampa del valor de dev en prod](#precedencia-vars). |
 | **Validación de sintaxis** | Si `node` está disponible en el runner, corre `node --check env.js` después del envsubst. Atrapa típos del template (ej. un valor no numérico que rompe un literal sin comillas). |
 | **Failure modes** | Sin `.deploy/env.js.tmpl` → falla con mensaje claro. Secret no existe en KV → falla en el `az keyvault secret show`. Valor de `vars` vacío o con `"` `\` `&` `$` backtick o salto de línea → falla (fail-closed; el runner prod no tiene `node`). Placeholder en `vars` sin `jq` en el runner → falla. Sintaxis inválida → falla en `node --check`. |
+
+<a id="precedencia-vars"></a>
+#### Precedencia `vars` > Key Vault — la trampa del valor de dev en prod
+
+Cada placeholder `${VAR_NAME}` del template se resuelve así, y la primera fuente que responde gana:
+
+1. **Variable de GitHub** con ese nombre, con la precedencia de GitHub: Environment del caller → repo → org.
+2. Si no hay variable: secret del KV cuyo nombre sale de `.deploy/env.map`, si el archivo mapea esa variable…
+3. …o, si no, de la convención `front-<app_name>-<var-kebab>`.
+
+Que `vars` le gane al KV es deliberado: permite configurar un front sin tocar el KV. El costo es una trampa **silenciosa**: la precedencia de GitHub cae del Environment al repo cuando el Environment no define la variable. Una variable **a nivel repo** con el valor de dev que falta en el Environment `prod` se resuelve **al valor de dev en un deploy de producción**. El job queda verde y el log dice `← vars`, que es exactamente lo que diría con el valor correcto; el fallo solo se ve cuando el front de producción llama a una URL de dev.
+
+Ejemplo: un front con `API_BASE_URL` definida a nivel repo apuntando a la API de dev (quizás de antes de que existiera el Environment `prod`). El Environment `prod` define `SIGNALR_HUB_URL` pero no `API_BASE_URL`. El deploy a prod publica un `env.js` con la API de prod para el hub y la de dev para todo lo demás, sin un solo error.
+
+La misma trampa aplica a la convención `TFVAR_*` de `_reusable-terraform-plan.yml` / `_reusable-terraform-apply.yml`, que lee `vars` con la misma precedencia: un `TFVAR_STORAGE_CORS_ALLOWED_ORIGINS` a nivel repo con el origen de dev sale como `TF_VAR_` en el plan de prod, y el plan se ve perfecto.
+
+**Regla operativa** (ADR [`0003`](../../docs/adr/0003-politicas-repositorios-produccion.md), A9): todo valor que difiera por ambiente vive en el **Environment** (`dev` y `prod`, con el mismo nombre en ambos), **nunca a nivel repo ni org**. A nivel repo u org solo van valores idénticos en todos los ambientes. Al migrar una variable de repo al Environment, sembrar ambos Environments primero y validar con un plan/deploy de dev antes de vaciar el nivel repo: borrarla antes deja al caller sin valor.
 
 **Roles RBAC requeridos sobre la MI de la VM** (`module.vm.identity_principal_id`):
 
 | Rol | Recurso | Estado |
 |---|---|---|
-| `Key Vault Secrets User` | KV de environment (`kv-oxp-dev-eus2-001`) | ✅ Asignado por `module.key_vault.vm_secrets_user` |
-| `Storage Blob Data Contributor` | SA compartido de fronts del plane (`stfrontappldeveus2001`, RG `rg-appl-dev-eus2-001`) | ⚠️ **Pendiente** — hoy ese rol lo tiene el SP de tfops, no la MI de la VM del BC. Asignarlo manualmente vía `az role assignment create` antes del primer deploy de cada BC (ver §5b paso 2). |
-| `authorized_actor_team` | string | `""` | Slug de un team de la org. Poblado ⇒ activa el **gate A5 de actor autorizado**, idéntico al de `_reusable-deploy-swarm.yml` ([detalle](#gate-a5)): primer step del job `build`, antes del checkout y de cualquier build o publicación. Aquí no hace falta job aparte: `deploy` hace `needs: build`, así que un gate denegado deja el job self-hosted en *skipped*, y `build` no tiene steps con `always()`. Requiere el secret `ACTOR_GATE_TOKEN` (`required: false`; sin él el gate deniega). Vacío ⇒ sin gate **solo fuera de prod**: con `environment: prod` el gate es obligatorio. |
+| `Key Vault Secrets User` | KV del BC y del ambiente (ej. `kv-oxp-dev-eus2-001`) | ✅ Asignado por `module.key_vault.vm_secrets_user` |
+| `Storage Blob Data Contributor` | SA compartido de fronts del plane (ej. en dev: `stfrontappldeveus2001`, RG `rg-appl-dev-eus2-001`) | ⚠️ **Pendiente** — hoy ese rol lo tiene el SP de tfops, no la MI de la VM del BC. Asignarlo manualmente vía `az role assignment create` antes del primer deploy de cada BC (ver §5b paso 2). |
 
 ### `_reusable-nuget-publish.yml`
 
@@ -566,13 +591,17 @@ Y como esa omisión significa que ahí el barrido **no liberó bytes**, el resum
 
 | Input | Tipo | Default | Descripción |
 |---|---|---|---|
-| `acr_name` | string | `croxpdeveus2001` | |
-| `repository_prefix` | string | `oxp` | |
+| `acr_name` | string | **requerido** | ACR del BC (ej. `croxpdeveus2001`). |
+| `repository_prefix` | string | **requerido** | Prefijo del repo en ACR (ej. `oxp`). |
+| `runner_group` | string | **requerido** | Runner group self-hosted del BC donde corre el cleanup (ej. `swarm-deploy-oxp`). |
 | `repositories_json` | string (JSON) | `[]` | Si vacío, descubre todos. |
 | `pr_number` | string | `""` | Modo dirigido si se da. |
 | `keep_sha7` | string | `""` | Sólo en modo dirigido. Preserva `pr-{N}` y `pr-{N}-{keep_sha7}`; borra el resto. Para cleanup intra-PR. |
 | `min_age_days` | number | `7` | Solo en modo barrido. |
 | `dry_run` | boolean | `false` | Lista sin borrar. |
+| `keep_last_pr` | number | `3` | Tags `pr-*` inmutables que cada repositorio conserva pase lo que pase. |
+| `keep_last_main` | number | `3` | Tags `main-*` que cada repositorio conserva. Solo tiene efecto con la poda de `main-*` habilitada. |
+| `runner_group_prod` | string | `""` | Runner group del swarm de **producción** del BC. Declararlo habilita la poda de `main-*` (ver [§8](#8-política-de-retención-de-imágenes)); vacío ⇒ los `main-*` se conservan todos. |
 
 ### `_reusable-terraform-plan.yml`
 
@@ -590,7 +619,9 @@ TF_VAR_* comunes se leen de `vars`/`secrets` del caller (que pasa
 del caller `TFVAR_<NOMBRE>` — org/repo/Environment — se exporta como
 `TF_VAR_<nombre>` y gana sobre `extra_tf_vars_json`, que queda como vía legada;
 valores multilínea y `TFVAR_ENVIRONMENT` se rechazan — `TF_VAR_environment` lo
-fija el input `environment`). Fail-closed: overrides `backend_*` con marcador
+fija el input `environment`). ⚠️ Un `TFVAR_*` por ambiente definido a nivel repo
+se filtra a prod si el Environment `prod` no lo redefine: ver
+[Precedencia `vars`](#precedencia-vars). Fail-closed: overrides `backend_*` con marcador
 `prod` exigen `environment=prod`; `environment` debe venir **en minúsculas**
 (el valor crudo viaja al subject OIDC y Entra lo matchea case-sensitive).
 
@@ -604,7 +635,7 @@ fija el input `environment`). Fail-closed: overrides `backend_*` con marcador
 | `plan_lock_timeout` | string | `5m` | `-lock-timeout` del plan. |
 | `comment_on_pr` | boolean | `true` | Publica/actualiza el comentario del plan en el PR. |
 | `comment_max_chars` | number | `60000` | Trunca el comentario por encima de este largo. |
-| `backend_resource_group` / `_storage_account` / `_container` / `_key` | string | (deriva de BC + env) | Overrides del backend. Con marcador `prod` exigen `environment=prod` (fail-closed). |
+| `backend_resource_group` / `_storage_account` / `_container` / `_key` | string | (deriva de BC + env; `_container`: `tfstate`) | Overrides del backend. Con marcador `prod` exigen `environment=prod` (fail-closed). |
 
 Secrets (vía `secrets: inherit` del caller): `VM_ADMIN_PASSWORD`, `GH_RUNNER_PAT`, `SINCOERP_PASSWORD` (OXP/cont), `FLAGSMITH_API_KEY` (cont) y `POSTGRESQL_ADMIN_PASSWORD` (cplane; **una sola línea** — la ruta `emit` no valida multilínea, a diferencia de `TFVAR_*`); vacíos se omiten.
 
@@ -635,7 +666,7 @@ no un post-merge automático).
 | `working_directory` | string | `infra` | Directorio de los `.tf`. |
 | `extra_tf_vars_json` | string (JSON) | `{}` | Igual que en plan (legado; preferir `TFVAR_*`). |
 | `apply_lock_timeout` | string | `10m` | `-lock-timeout` de plan y apply. |
-| `backend_resource_group` / `_storage_account` / `_container` / `_key` | string | (deriva de BC + env) | Overrides del backend. Con marcador `prod` exigen `environment=prod` (fail-closed). |
+| `backend_resource_group` / `_storage_account` / `_container` / `_key` | string | (deriva de BC + env; `_container`: `tfstate`) | Overrides del backend. Con marcador `prod` exigen `environment=prod` (fail-closed). |
 
 Secrets (vía `secrets: inherit` del caller): mismos que
 `_reusable-terraform-plan.yml`, más `ACTOR_GATE_TOKEN` (obligatorio cuando el
@@ -673,7 +704,7 @@ Read`; el `GITHUB_TOKEN` del run NO sirve).
 
 ## 4. Convenciones generales
 
-- **Naming en ACR:** `oxp/{bounded-context}-{componente}` en kebab-case. Ej: `oxp/radicacion-comandos-api`, `oxp/radicacion-grpc-api`, `oxp/reconocimiento-procesamiento`.
+- **Naming en ACR:** `{repository_prefix}/{servicio}-{componente}` en kebab-case. Ej. en OXP: `oxp/radicacion-comandos-api`, `oxp/radicacion-grpc-api`, `oxp/reconocimiento-procesamiento`.
 - **Idioma:** los workflows, descripciones y commits van en español (alineado con `CLAUDE.md`).
 - **Permisos:** todo workflow declara `permissions:` mínimo. El default global se asume `read-all` y se sube a `write` solo en steps específicos (ej: comentar PR).
 - **Acciones de terceros:** versionadas con tag mayor (`@v4`). Para hardening futuro se pueden pinnear con SHA.
@@ -731,7 +762,7 @@ Asumiendo el repo `Cosmos-SincoERP/<MiRepo>` con uno o más Dockerfiles:
          images_json: ${{ needs.resolver.outputs.images_json }}
    ```
 
-4. **Validar acceso al runner** — confirmar que el repo está dentro de la org `Cosmos-SincoERP` (los runners self-hosted están a nivel organización, runner group `swarm-deploy-oxp`, labels `[azure, swarm-deploy]`).
+4. **Validar acceso al runner** — confirmar que el repo está dentro de la org `Cosmos-SincoERP` (los runners self-hosted están a nivel organización, en el runner group del BC —ej. `swarm-deploy-oxp`—, labels `[azure, swarm-deploy]`).
 
 5. **Abrir un PR de prueba** — verificar que la matriz construya, publique al ACR y comente el PR con los tags.
 
@@ -743,7 +774,7 @@ Asumiendo el repo `Cosmos-SincoERP/<MiRepo>` con uno o más Dockerfiles:
 
 Asumiendo el repo `Cosmos-SincoERP/<MiFront>` con un SPA construido con Bun + Vite. **NO hay GitHub Actions secrets que configurar** — la auth a Azure se resuelve por la Managed Identity de la VM que hostea el self-hosted runner (mismo patrón que los repos .NET ya onboardeados).
 
-1. **Storage Account: ya existe, es compartido** — los fronts del plane **no** provisionan un SA por proyecto. Todos comparten `stfrontappldeveus2001` (RG `rg-appl-dev-eus2-001`), aprovisionado una sola vez por la infra de **ApplicationPlane** (static website con SPA fallback `404 → index.html`, detrás del Front Door que sirve `/*`). Un front nuevo solo agrega su namespace bajo `$web/<app>/`; no requiere cambios de Terraform en el repo de Infraestructura del BC.
+1. **Storage Account: ya existe, es compartido** — los fronts del plane **no** provisionan un SA por proyecto. Todos los de un ambiente comparten uno (en dev, `stfrontappldeveus2001`, RG `rg-appl-dev-eus2-001`), aprovisionado una sola vez por la infra de **ApplicationPlane** (static website con SPA fallback `404 → index.html`, detrás del Front Door que sirve `/*`). Un front nuevo solo agrega su namespace bajo `$web/<app>/`; no requiere cambios de Terraform en el repo de Infraestructura del BC.
 
 2. **Otorgar a la MI de la VM del BC acceso al SA compartido** — `Storage Blob Data Contributor` sobre `stfrontappldeveus2001` lo tiene hoy el SP de tfops, **no la MI de la VM** del BC (que es quien corre el deploy desde el self-hosted runner). Hasta que se incorpore al provisioning de ApplicationPlane, asignarlo manualmente una vez por BC (acá con OXP de ejemplo: la VM vive en el RG del BC, el SA en `rg-appl-dev-eus2-001`):
 
@@ -795,6 +826,7 @@ Asumiendo el repo `Cosmos-SincoERP/<MiFront>` con un SPA construido con Bun + Vi
 4. **Sembrar los secrets en Key Vault** — para cada `${VAR_NAME}` del template, crear el secret correspondiente:
 
    ```bash
+   # Ejemplo con OXP en dev: usar el KV del BC y del ambiente destino.
    KV=kv-oxp-dev-eus2-001
    APP=oxp   # mismo valor que app_name del workflow
 
@@ -806,9 +838,9 @@ Asumiendo el repo `Cosmos-SincoERP/<MiFront>` con un SPA construido con Bun + Vi
 
    La MI de la VM ya tiene `Key Vault Secrets User` sobre el KV (lo otorga `module.key_vault.vm_secrets_user`), así que el step de lectura del workflow funciona sin cambios.
 
-5. **Validar acceso al runner** — confirmar que el repo está dentro de la org `Cosmos-SincoERP` y autorizado en el runner group `swarm-deploy-oxp` (mismo grupo que usan los repos .NET). El workflow pide los labels `[self-hosted, azure, swarm-deploy]` — son los que ya tiene el runner provisionado por la VM.
+5. **Validar acceso al runner** — confirmar que el repo está dentro de la org `Cosmos-SincoERP` y autorizado en el runner group del BC (ej. `swarm-deploy-oxp`; el mismo que usan sus repos .NET). El workflow pide los labels `[self-hosted, azure, swarm-deploy]` — son los que ya tiene el runner provisionado por la VM.
 
-6. **Caller workflow** — crear `<MiFront>/.github/workflows/deploy.yml`:
+6. **Caller workflow** — crear `<MiFront>/.github/workflows/deploy.yml` (valores de ejemplo: OXP en dev; los de cada BC salen del catálogo, ver [§9](#bounded-contexts-registrados)):
 
    ```yaml
    name: deploy
@@ -857,7 +889,7 @@ Asumiendo el repo `Cosmos-SincoERP/<MiFront>` con un SPA construido con Bun + Vi
 
 ## 6. Tirar una imagen de PR localmente
 
-Los devs pueden usar las imágenes de un PR para sus ambientes locales antes de mergear:
+Los devs pueden usar las imágenes de un PR para sus ambientes locales antes de mergear (ejemplo con el ACR de OXP; cada BC tiene el suyo):
 
 ```bash
 # Login al ACR (una vez por sesión)
@@ -934,15 +966,9 @@ Si un cambio te exige tocar la columna izquierda, es una decisión de plataforma
 
 ### Bounded contexts registrados
 
-> ⚠️ El catálogo declarativo y la skill de onboarding viven en `Cosmos-SincoERP/Cosmos.AgentSkills`, no en este repo. Esta tabla es **referencia humana duplicada**; la fuente de verdad está en `.claude/skills/onboard-dotnet-repo/bounded-contexts.yml` de ese otro repo. Sincronizar manualmente cuando se registre un BC nuevo.
+El catálogo de bounded contexts —con los valores de cada uno para los inputs de la columna derecha (ACR, Key Vault, prefijos, builder, runner group, networks)— vive en `Cosmos-SincoERP/Cosmos.AgentSkills`, en `.claude/skills/onboard-dotnet-repo/bounded-contexts.yml`. Es la **única** fuente de verdad: este README no la duplica, para no desincronizarse cada vez que se registra un BC. Los valores `oxp` que aparecen en los ejemplos de este documento son eso, ejemplos.
 
-| Key | Display name | Infra repo | ACR | Key Vault | Repo prefix | Swarm secret prefix | Buildx builder | Runner group (GitHub) | Networks Swarm |
-|---|---|---|---|---|---|---|---|---|---|
-| `oxp` | ObligacionesPorPagar | `Cosmos-SincoERP/ObligacionesPorPagar.Infraestructura` | `croxpdeveus2001` | `kv-oxp-dev-eus2-001` | `oxp` | `oxp` | `oxp-builder` | `swarm-deploy-oxp` | `oxp-public`, `oxp-internal` |
-| `cont` | Contabilidad | `Cosmos-SincoERP/Cosmos.Contabilidad.Infraestructura` | `crcontdeveus2001` | `kv-cont-dev-eus2-001` | `cont` | `cont` | `cont-builder` | `swarm-deploy-cont` | `cont-public`, `cont-internal` |
-| `impu` | Impuestos | `Cosmos-SincoERP/Cosmos.Impuestos.Infraestructura` | `crimpudeveus2001` | `kv-impu-dev-eus2-001` | `impu` | `impu` | `impu-builder` | `swarm-deploy-impu` | `impu-public`, `impu-internal` |
-
-Para registrar un BC nuevo (Impuestos, Terceros, etc.): invocar la skill **`/provision-bc-infra`** desde el cwd del repo `Cosmos.AgentSkills`. La skill clona el repo aplicativo del BC en read-only, detecta sus dependencias Azure (OpenAI, DocIntel, Storage Blobs, RabbitMQ, Postgres) por grep de PackageReferences y appsettings, propone los módulos Terraform a incluir/excluir, y orquesta end-to-end (gh repo create, scaffold mecánico, ediciones de TF según los hallazgos, bootstrap externo Azure, runner group org-level, push inicial de main, PR de validación del primer plan, y registro del BC en este catálogo) con confirmación explícita en cada paso costoso. Es idempotente: si el flujo se interrumpe, re-invocar la skill detecta el estado y propone retomar desde donde quedó.
+Para registrar un BC nuevo: invocar la skill **`/provision-bc-infra`** desde el cwd del repo `Cosmos.AgentSkills`. La skill clona el repo aplicativo del BC en read-only, detecta sus dependencias Azure (OpenAI, DocIntel, Storage Blobs, RabbitMQ, Postgres) por grep de PackageReferences y appsettings, propone los módulos Terraform a incluir/excluir, y orquesta end-to-end (gh repo create, scaffold mecánico, ediciones de TF según los hallazgos, bootstrap externo Azure, runner group org-level, push inicial de main, PR de validación del primer plan, y registro del BC en este catálogo) con confirmación explícita en cada paso costoso. Es idempotente: si el flujo se interrumpe, re-invocar la skill detecta el estado y propone retomar desde donde quedó.
 
 Para hacerlo a mano (sin la skill), las piezas viven en `.claude/skills/provision-bc-infra/`:
 - `SKILL.md` — secuencia de pasos (sirve como referencia humana).
