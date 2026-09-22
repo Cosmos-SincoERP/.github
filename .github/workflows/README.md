@@ -66,7 +66,7 @@ Mantener estos nombres estables es contrato público: cambiarlos rompe los Rules
 | `_reusable-nuget-publish-batch.yml` | `NuGet publish batch (reusable)` | **Estándar de release NuGet (lockstep):** publica todos los paquetes del catálogo con UNA versión (un tag `v<X>`), en paralelo. Sin anclas de dependencias internas. | `bump_type`, `version`, `tag_prefix`, `catalog_path`, `create_github_release` + secret `NUGET_API_KEY` |
 | `_reusable-npm-publish.yml` | `Publicar a <registro> (reusable)` | Publica una librería npm (no versiona): `build` + `changeset publish` (idempotente). Soporta npm público (secret `NPM_TOKEN`) y GitHub Packages (con el `GITHUB_TOKEN` del workflow). | `working_directory`, `bun_version`, `npm_registry`, `publish_command` + secret opcional `NPM_TOKEN` |
 | `_reusable-secret-scan.yml` | `Secret Scan (gitleaks)` | Mitigación open-source de secret scanning (gitleaks) para repos privados sin GHAS (ADR 0002 E.6). | `config-path` |
-| `_reusable-tests-dotnet.yml` | `Tests .NET (reusable)` | Restore + build + test de soluciones .NET, con exclusión de proyectos opcional. | `solution_path`, `working_directory`, `dotnet_version`, `configuration`, `excluded_projects` |
+| `_reusable-tests-dotnet.yml` | `Tests .NET (reusable)` | Restore + build + test de soluciones .NET, con exclusión de proyectos opcional. Sirve los dos dialectos de `dotnet test` (VSTest y Microsoft Testing Platform), eligiendo según el `global.json` del consumidor. | `solution_path`, `working_directory`, `dotnet_version`, `configuration`, `excluded_projects`, `test_runner`, `mtp_test_args` |
 | `_reusable-ci-front.yml` | `CI Front (reusable)` | Lint + test + build de fronts SPA (Bun), cada step togglable. | `working_directory`, `bun_version`, `run_lint`, `run_test`, `run_build`, `github_packages` |
 | `_reusable-terraform-plan.yml` | `Terraform plan (reusable)` | Ciclo `terraform plan` de los `*.Infraestructura`: job `validate` sin secretos (corre en todo PR, incl. Dependabot) + job `plan` autenticado (OIDC, GitHub Environment del caller) que comenta el resultado en el PR. | `bounded_context`, `environment`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `comment_on_pr` + `secrets: inherit` |
 | `_reusable-terraform-apply.yml` | `Terraform apply (reusable)` | `terraform apply` de los `*.Infraestructura` (OIDC + backend + GitHub Environment del caller); en prod exige gate de actor autorizado (team + `ACTOR_GATE_TOKEN`) y correr desde `main` por `workflow_dispatch`; `concurrency` por BC y ambiente, no cancelable. | `bounded_context`, `environment`, `authorized_actor_team`, `extra_tf_vars_json`, `tf_version`, `working_directory`, `apply_lock_timeout` + `secrets: inherit` |
@@ -124,6 +124,43 @@ Build + test de una solución .NET en runner hosted.
 | `working_directory` | string | `.` | Directorio donde se ejecuta `dotnet`. |
 | `dotnet_version` | string | `10.0.x` | Versión del SDK. |
 | `configuration` | string | `Release` | `Debug` o `Release`. |
+| `excluded_projects` | string | `""` | Proyectos a excluir del step Test, uno por línea. |
+| `test_runner` | string | `auto` | `auto` \| `vstest` \| `mtp`. Ver abajo. |
+| `mtp_test_args` | string | `--report-xunit-trx` | Argumentos por módulo de test (tras `--`), solo en modo MTP. |
+
+#### VSTest y Microsoft Testing Platform
+
+`dotnet test` tiene dos dialectos de línea de comando incompatibles y el reusable sirve
+los dos. **No hace falta declarar cuál**: con `test_runner: auto` (el default) el workflow
+lee `test.runner` del `global.json` del consumidor —la mitad local del opt-in oficial de
+MTP— subiendo desde `working_directory` hasta el primer `global.json`, igual que hace el
+SDK. `DOTNET_TEST_RUNNER` (≥ .NET 11 P6) tiene precedencia, también igual que en el SDK.
+
+|  | VSTest (default) | MTP |
+|---|---|---|
+| Target | posicional | `--solution` / `--project` |
+| TRX | `--logger "trx;LogFileName=…"` | `mtp_test_args`, tras `--` |
+| Cero tests | exit 0 | exit 8 → el reusable pasa `--ignore-exit-code 8` |
+| Proyecto no-test en el bucle de exclusión | no-op | exit 1 → el reusable filtra por `IsTestingPlatformApplication` |
+
+`test_runner: vstest|mtp` fuerza el dialecto; es una escotilla, no la vía normal.
+
+**Para migrar un repo a MTP** basta con su mitad local — el reusable se entera solo:
+
+```jsonc
+// global.json del repo consumidor
+{
+  "sdk": { "version": "10.0.100", "rollForward": "latestFeature" },
+  "test": { "runner": "Microsoft.Testing.Platform" }
+}
+```
+
+y quitar el pin `xunit.v3.mtp-off` si el repo lo tiene (ese paquete saca `Microsoft.Testing.*`
+del grafo y es justo lo que impide MTP).
+
+> ⚠️ El default de `mtp_test_args` es el TRX de **xunit v3**. `--report-trx` (MSTest/NUnit)
+> exige referenciar `Microsoft.Testing.Extensions.TrxReport`, que xunit v3 **no** trae
+> —solo `.Abstractions`—; sin la extensión el módulo rechaza la opción con **exit code 5**.
 
 ### `_reusable-ci-front.yml`
 
