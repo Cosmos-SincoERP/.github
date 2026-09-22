@@ -181,7 +181,7 @@ Despliega un stack a Docker Swarm.
 | `secret_names` | string | `""` | Lista separada por espacios de nombres KV a materializar. Vacío deshabilita. |
 | `swarm_secret_prefix` | string | **requerido** | Prefijo del nombre del Swarm secret (`<prefix>_<snake>_v<sha8>`). Usado también para identificar secrets propios al hacer GC. |
 | `runner_group` | string | **requerido** | Runner group self-hosted donde corre el job. El aislamiento por BC se hace exclusivamente por aquí. |
-| `authorized_actor_team` | string | `""` | Slug de un team de la org. Poblado ⇒ activa el gate A5 de actor autorizado (abajo). Vacío ⇒ sin gate. |
+| `authorized_actor_team` | string | `""` | Slug de un team de la org. Poblado ⇒ activa el gate A5 de actor autorizado (abajo). Vacío ⇒ sin gate **solo fuera de prod**: con `stack_environment: prod` el gate es obligatorio y su ausencia falla el job. |
 
 | Secret | Requerido | Descripción |
 |---|---|---|
@@ -217,15 +217,20 @@ registry propio y reusa `cr<bc>deveus2001` —con marcador `dev`— también en 
 si el ambiente es `prod`, que el run venga por `workflow_dispatch` desde
 `refs/heads/main`. Requiere el secret `ACTOR_GATE_TOKEN`; sin él deniega.
 
-Se activa **solo** por el input, a diferencia del gemelo de Terraform que además
-lo activa con `environment == 'prod'`. Es una diferencia de migración, no de
-criterio: los callers prod de swarm y de front llevan hoy el gate como réplica
-manual en un job propio (un job `uses:` no admite `steps:`) y ninguno pasa el
-secret, así que el invariante `prod ⇒ gate` los denegaría a todos de golpe. El
-cuerpo del step sí es el mismo, incluido el chequeo `prod ⇒ team obligatorio`
-—hoy inalcanzable—, para que activar el invariante sea después cambiar una sola
-línea. Un caller que conserve su réplica y además pase el input evalúa el mismo
-predicado dos veces, con el mismo veredicto.
+**Invariante `prod ⇒ gate`.** El gate se activa con el input **o** con el ambiente
+en `prod`: un caller prod que olvide `authorized_actor_team` no despliega sin gate,
+el propio step deniega (fail-closed). Es el mismo criterio que el gemelo de Terraform.
+
+Nació opt-in —solo con el input— porque los callers prod llevaban el gate como
+réplica manual en un job propio (un job `uses:` no admite `steps:`) y ninguno pasaba
+el secret al reusable. Migrados los 32, el invariante ya no rompe a nadie.
+
+Los callers de swarm **conservan** su job `gate` replicado, y no por inercia: es lo
+único que protege al job propio del caller (`leer-tags-dev` / `prep`), que corre en
+runner self-hosted **antes** del reusable. Un caller no puede poner `needs:` a un job
+interno de un reusable, así que el gate nativo no puede cubrirlo. Los de front, que no
+tienen jobs propios, sí lo retiraron. Donde conviven, ambos evalúan el mismo predicado
+con el mismo veredicto.
 
 Forma de uso en el caller (idéntica a la de los apply prod de infra):
 
@@ -270,7 +275,7 @@ Build + test + deploy de un SPA al Storage Account static website. Sigue el patr
 |---|---|---|
 | `Key Vault Secrets User` | KV de environment (`kv-oxp-dev-eus2-001`) | ✅ Asignado por `module.key_vault.vm_secrets_user` |
 | `Storage Blob Data Contributor` | SA compartido de fronts del plane (`stfrontappldeveus2001`, RG `rg-appl-dev-eus2-001`) | ⚠️ **Pendiente** — hoy ese rol lo tiene el SP de tfops, no la MI de la VM del BC. Asignarlo manualmente vía `az role assignment create` antes del primer deploy de cada BC (ver §5b paso 2). |
-| `authorized_actor_team` | string | `""` | Slug de un team de la org. Poblado ⇒ activa el **gate A5 de actor autorizado**, idéntico al de `_reusable-deploy-swarm.yml` ([detalle](#gate-a5)): primer step del job `build`, antes del checkout y de cualquier build o publicación. Aquí no hace falta job aparte: `deploy` hace `needs: build`, así que un gate denegado deja el job self-hosted en *skipped*, y `build` no tiene steps con `always()`. Requiere el secret `ACTOR_GATE_TOKEN` (`required: false`; sin él el gate deniega). Vacío ⇒ sin gate. |
+| `authorized_actor_team` | string | `""` | Slug de un team de la org. Poblado ⇒ activa el **gate A5 de actor autorizado**, idéntico al de `_reusable-deploy-swarm.yml` ([detalle](#gate-a5)): primer step del job `build`, antes del checkout y de cualquier build o publicación. Aquí no hace falta job aparte: `deploy` hace `needs: build`, así que un gate denegado deja el job self-hosted en *skipped*, y `build` no tiene steps con `always()`. Requiere el secret `ACTOR_GATE_TOKEN` (`required: false`; sin él el gate deniega). Vacío ⇒ sin gate **solo fuera de prod**: con `environment: prod` el gate es obligatorio. |
 
 ### `_reusable-nuget-publish.yml`
 
