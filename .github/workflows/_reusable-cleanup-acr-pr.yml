@@ -316,8 +316,190 @@ jobs:
           # Cortocircuito: si el ACR deja de responder, reintentar tag por tag
           # sólo alarga el job hasta el timeout. A partir de este número de
           # fallos SEGUIDOS se deja de intentar y se reporta.
+          #
+          # Bajo `xargs -P` la racha no se puede contar exacto: se aproxima con
+          # un archivo que cada fallo engruesa y cada éxito trunca. La única
+          # carrera posible —un éxito truncando mientras un fallo anota— PIERDE
+          # fallos, o sea que tarda de más en abrir el circuito. Es el lado
+          # seguro: esto es una optimización del timeout, no una garantía.
           UNTAG_FAIL_STREAK_MAX=5
-          untag_fail_streak=0
+          streak_file=$(mktemp)
+          circuit_file="$(mktemp -d)/abierto"
+          # Paralelismo del untag. Al ras de la purga (4) y por debajo del
+          # recorrido de referenciados (6) por la misma razón que aquella: esto
+          # ESCRIBE en el registry, y saturar el ACR acá cuesta más que ir lento.
+          UNTAG_PARALLELISM=4
+
+          # Caché del estado de los PRs, compartida por TODO el barrido. Los
+          # repositorios de imágenes son del mismo repo de GitHub y cada PR deja
+          # varios tags (el alias `pr-N` más un `pr-N-<sha7>` por commit), así
+          # que sin caché la misma consulta se repite decenas de veces: en
+          # oxp/Radicación, 74 tags `pr-*` por repositorio sobre 35 PRs.
+          pr_cache_dir=$(mktemp -d)
+
+          export UNTAG_FAIL_STREAK_MAX
+          export DELETED_FILE="$deleted_file"
+          export UNTAG_FAIL_FILE="$untag_fail_file"
+          export STREAK_FILE="$streak_file"
+          export CIRCUIT_FILE="$circuit_file"
+          export PR_CACHE_DIR="$pr_cache_dir"
+
+          # Estado de un PR, memoizado. Emite "<state>\t<closed_at>", o falla y
+          # emite el HTTP que lo impidió. El archivo de caché se publica con
+          # `mv` —atómico dentro del mismo directorio—, así que un lector
+          # concurrente ve el contenido completo o no ve nada; un miss cuesta
+          # una consulta de más, nunca un JSON a medio escribir. Los fallos NO
+          # se cachean: el llamador saltea el tag y el siguiente reintenta, que
+          # es el lado seguro (cachear un 000 transitorio protegería de más,
+          # pero cachear un estado equivocado borraría de más).
+          consultar_estado_pr() {
+            local pr_n="$1"
+            local cache="$PR_CACHE_DIR/${pr_n}.tsv"
+            local body tmp code
+
+            if [[ -f "$cache" ]]; then
+              cat "$cache"
+              return 0
+            fi
+
+            body=$(mktemp)
+            code=$(curl -s -o "$body" -w "%{http_code}" \
+                     -H "Authorization: Bearer $GH_TOKEN" \
+                     -H "Accept: application/vnd.github+json" \
+                     -H "X-GitHub-Api-Version: 2022-11-28" \
+                     "https://api.github.com/repos/${REPO_FULL}/pulls/${pr_n}" || echo 000)
+            if [[ "$code" != "200" ]]; then
+              rm -f "$body"
+              printf '%s\n' "$code"
+              return 1
+            fi
+
+            tmp=$(mktemp "$PR_CACHE_DIR/.tmpXXXXXX")
+            jq -r '[.state, (.closed_at // "null")] | @tsv' "$body" > "$tmp"
+            rm -f "$body"
+            mv -f "$tmp" "$cache"
+            cat "$cache"
+          }
+          export -f consultar_estado_pr
+
+          # Decide y ejecuta el untag de UN tag. Es el cuerpo que corre bajo
+          # `xargs -P`; va como función exportada, y no inline en el `bash -c`,
+          # para no meter cien líneas dentro de comillas.
+          #
+          # Paralelizable porque las decisiones son independientes entre sí:
+          # `tags_desc` y el conjunto protegido son un snapshot tomado ANTES del
+          # barrido del repositorio, y ningún untag cambia qué está protegido.
+          # Lo que sí comparten los workers son archivos, nunca variables: los
+          # `printf >>` de una línea son atómicos bajo O_APPEND y el recuento
+          # final sale de `wc -l`, no de un contador en memoria que el subshell
+          # se llevaría a la tumba.
+          procesar_tag() {
+            local full="$1" tag="$2"
+            local pr_n info state closed_at closed_epoch now_epoch age_days
+            local untag_ok intento err
+
+            # Un circuito abierto no aborta a los workers en vuelo; sólo evita
+            # que los siguientes arranquen.
+            if [[ -e "$CIRCUIT_FILE" ]]; then
+              return 0
+            fi
+
+            # La retención garantizada se evalúa ANTES que `keep_sha7` y que
+            # el estado del PR: es el piso que ninguna otra regla levanta.
+            if grep -qxF "$tag" "$PROTECTED_FILE"; then
+              echo "  Skip: $tag (retención garantizada)"
+              return 0
+            fi
+
+            # En modo dirigido, si el caller pasó keep_sha7 (cleanup intra-PR),
+            # preservar tanto el alias mutable `pr-{N}` como el inmutable
+            # `pr-{N}-{keep_sha7}`. Los demás `pr-{N}-*` (commits anteriores
+            # del mismo PR) sí se borran.
+            if [[ -n "$PR_NUMBER" && -n "$KEEP_SHA7" ]] \
+               && { [[ "$tag" == "pr-${PR_NUMBER}" ]] \
+                    || [[ "$tag" == "pr-${PR_NUMBER}-${KEEP_SHA7}" ]]; }; then
+              echo "  Skip: $tag (preservado por keep_sha7=$KEEP_SHA7)"
+              return 0
+            fi
+
+            # Sólo los `pr-*` se consultan contra la API de GitHub. Un
+            # `main-*` que llegó hasta acá no está protegido por retención ni
+            # desplegado en ningún ambiente: se borra sin más trámite.
+            if [[ -z "$PR_NUMBER" && "$tag" == pr-* ]]; then
+              pr_n=$(sed -E 's/^pr-([0-9]+).*/\1/' <<< "$tag")
+              if ! info=$(consultar_estado_pr "$pr_n"); then
+                echo "  Skip: $tag (PR #$pr_n no encontrado, HTTP ${info:-000})"
+                return 0
+              fi
+              IFS=$'\t' read -r state closed_at <<< "$info"
+
+              if [[ "$state" == "open" ]]; then
+                echo "  Skip: $tag (PR #$pr_n abierto)"
+                return 0
+              fi
+              if [[ -n "$closed_at" && "$closed_at" != "null" ]]; then
+                closed_epoch=$(date -d "$closed_at" +%s 2>/dev/null || echo 0)
+                now_epoch=$(date +%s)
+                age_days=$(( (now_epoch - closed_epoch) / 86400 ))
+                if (( age_days < MIN_AGE_DAYS )); then
+                  echo "  Skip: $tag (PR #$pr_n cerrado hace $age_days días < $MIN_AGE_DAYS)"
+                  return 0
+                fi
+              fi
+            fi
+
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "  [DRY-RUN] untag: ${full}:${tag}"
+            else
+              echo "  Untag: ${full}:${tag}"
+              # `untag` borra SÓLO la referencia del tag. `repository delete
+              # --image repo:tag` borraría el manifest entero y con él todos
+              # los tags que lo comparten — y el promote a main re-taguea el
+              # mismo manifest (`docker pull pr-N-<sha7>` → `push main-<X>`),
+              # así que aquel borrado se llevaba en cascada el `main-<X>` que
+              # el deploy tenía vivo. El espacio lo recupera la purga de
+              # manifests huérfanos, más abajo.
+              #
+              # Un fallo transitorio —DNS del runner, throttling del ACR— NO
+              # aborta el barrido. Se reintenta con backoff y, si persiste, el
+              # tag se anota y se sigue con el resto; el job falla AL FINAL con
+              # la lista. Antes cualquier error hacía `exit 1` en el acto y el
+              # barrido quedaba a medias, para volver a fallar en el mismo
+              # punto la semana siguiente: así croxpdeveus2001 encadenó cuatro
+              # semanas sin limpiar y llegó a 495 GB sobre una cuota de 10 GB.
+              untag_ok=0
+              for intento in 1 2 3; do
+                if err=$(az acr repository untag -n "$ACR" --image "${full}:${tag}" 2>&1 >/dev/null); then
+                  untag_ok=1; break
+                fi
+                if grep -qiE "(does not exist|TagNotFound|not found)" <<< "$err"; then
+                  echo "    $tag: ya no existe — carrera con otro run"
+                  untag_ok=1; break
+                fi
+                if (( intento < 3 )); then
+                  echo "    $tag: intento ${intento}/3 falló, reintento en $(( intento * 5 ))s: $err"
+                  sleep $(( intento * 5 ))
+                fi
+              done
+              if (( untag_ok == 1 )); then
+                : > "$STREAK_FILE"
+              else
+                echo "::warning::No se pudo untaggear ${full}:${tag} tras 3 intentos: $err"
+                printf '%s\n' "${full}:${tag}" >> "$UNTAG_FAIL_FILE"
+                printf 'x\n' >> "$STREAK_FILE"
+                # `mkdir` es la apertura atómica del circuito: de los workers
+                # que crucen el umbral a la vez, sólo uno lo abre y sólo uno
+                # emite el ::error::, en vez de uno por worker en vuelo.
+                if (( $(wc -l < "$STREAK_FILE") >= UNTAG_FAIL_STREAK_MAX )) \
+                   && mkdir "$CIRCUIT_FILE" 2>/dev/null; then
+                  echo "::error::${UNTAG_FAIL_STREAK_MAX} fallos de untag sin un éxito entremedio: el ACR no responde. Se abandona el barrido."
+                fi
+                return 0
+              fi
+            fi
+            printf -- '- `%s`\n' "${full}:${tag}" >> "$DELETED_FILE"
+          }
+          export -f procesar_tag
 
           while IFS= read -r repo; do
             [[ -z "$repo" ]] && continue
@@ -379,107 +561,25 @@ jobs:
               tags=$(grep -E "^pr-[0-9]+" <<< "$tags_desc" || true)
             fi
 
-            for tag in $tags; do
-              # La retención garantizada se evalúa ANTES que `keep_sha7` y que
-              # el estado del PR: es el piso que ninguna otra regla levanta.
-              if grep -qxF "$tag" "$protected_file"; then
-                echo "  Skip: $tag (retención garantizada)"
-                continue
-              fi
+            # El bucle de tags va en paralelo: ver por qué es seguro en el
+            # comentario de `procesar_tag`. El `set` va acá y no se hereda: las
+            # opciones del shell no cruzan un `bash -c`. Sin `-e` a propósito —
+            # un no-cero suelto no debe matar al worker a mitad de un tag y
+            # dejarlo sin registrar; los errores se manejan explícitamente.
+            export PROTECTED_FILE="$protected_file"
+            printf '%s\n' "$tags" \
+              | grep -v '^[[:space:]]*$' \
+              | xargs -r -P "$UNTAG_PARALLELISM" -I{} \
+                  bash -c 'set -uo pipefail; procesar_tag "$0" "$1"' "$full" {} \
+              || true
 
-              # En modo dirigido, si el caller pasó keep_sha7 (cleanup intra-PR),
-              # preservar tanto el alias mutable `pr-{N}` como el inmutable
-              # `pr-{N}-{keep_sha7}`. Los demás `pr-{N}-*` (commits anteriores
-              # del mismo PR) sí se borran.
-              if [[ -n "$PR_NUMBER" && -n "$KEEP_SHA7" ]] \
-                 && { [[ "$tag" == "pr-${PR_NUMBER}" ]] \
-                      || [[ "$tag" == "pr-${PR_NUMBER}-${KEEP_SHA7}" ]]; }; then
-                echo "  Skip: $tag (preservado por keep_sha7=$KEEP_SHA7)"
-                continue
-              fi
-
-              # Sólo los `pr-*` se consultan contra la API de GitHub. Un
-              # `main-*` que llegó hasta acá no está protegido por retención ni
-              # desplegado en ningún ambiente: se borra sin más trámite.
-              if [[ -z "$PR_NUMBER" && "$tag" == pr-* ]]; then
-                pr_n=$(echo "$tag" | sed -E 's/^pr-([0-9]+).*/\1/')
-                http_code=$(curl -s -o /tmp/pr.json -w "%{http_code}" \
-                  -H "Authorization: Bearer $GH_TOKEN" \
-                  -H "Accept: application/vnd.github+json" \
-                  -H "X-GitHub-Api-Version: 2022-11-28" \
-                  "https://api.github.com/repos/$REPO_FULL/pulls/$pr_n" || echo 000)
-
-                if [[ "$http_code" != "200" ]]; then
-                  echo "  Skip: $tag (PR #$pr_n no encontrado, HTTP $http_code)"
-                  continue
-                fi
-                state=$(jq -r '.state' /tmp/pr.json)
-                closed_at=$(jq -r '.closed_at' /tmp/pr.json)
-
-                if [[ "$state" == "open" ]]; then
-                  echo "  Skip: $tag (PR #$pr_n abierto)"
-                  continue
-                fi
-                if [[ -n "$closed_at" && "$closed_at" != "null" ]]; then
-                  closed_epoch=$(date -d "$closed_at" +%s 2>/dev/null || echo 0)
-                  now_epoch=$(date +%s)
-                  age_days=$(( (now_epoch - closed_epoch) / 86400 ))
-                  if (( age_days < MIN_AGE_DAYS )); then
-                    echo "  Skip: $tag (PR #$pr_n cerrado hace $age_days días < $MIN_AGE_DAYS)"
-                    continue
-                  fi
-                fi
-              fi
-
-              if [[ "$DRY_RUN" == "true" ]]; then
-                echo "  [DRY-RUN] untag: ${full}:${tag}"
-              else
-                echo "  Untag: ${full}:${tag}"
-                # `untag` borra SÓLO la referencia del tag. `repository delete
-                # --image repo:tag` borraría el manifest entero y con él todos
-                # los tags que lo comparten — y el promote a main re-taguea el
-                # mismo manifest (`docker pull pr-N-<sha7>` → `push main-<X>`),
-                # así que aquel borrado se llevaba en cascada el `main-<X>` que
-                # el deploy tenía vivo. El espacio lo recupera la purga de
-                # manifests huérfanos, más abajo.
-                #
-                # Un fallo transitorio —DNS del runner, throttling del ACR— NO
-                # aborta el barrido. Se reintenta con backoff y, si persiste, el
-                # tag se anota y se sigue con el resto; el job falla AL FINAL con
-                # la lista. Antes cualquier error hacía `exit 1` en el acto y el
-                # barrido quedaba a medias, para volver a fallar en el mismo
-                # punto la semana siguiente: así croxpdeveus2001 encadenó cuatro
-                # semanas sin limpiar y llegó a 495 GB sobre una cuota de 10 GB.
-                untag_ok=0
-                for intento in 1 2 3; do
-                  if err=$(az acr repository untag -n "$ACR" --image "${full}:${tag}" 2>&1 >/dev/null); then
-                    untag_ok=1; break
-                  fi
-                  if grep -qiE "(does not exist|TagNotFound|not found)" <<< "$err"; then
-                    echo "    (ya no existe — carrera con otro run)"
-                    untag_ok=1; break
-                  fi
-                  if (( intento < 3 )); then
-                    echo "    intento ${intento}/3 falló, reintento en $(( intento * 5 ))s: $err"
-                    sleep $(( intento * 5 ))
-                  fi
-                done
-                if (( untag_ok == 1 )); then
-                  untag_fail_streak=0
-                else
-                  echo "::warning::No se pudo untaggear ${full}:${tag} tras 3 intentos: $err"
-                  printf '%s\n' "${full}:${tag}" >> "$untag_fail_file"
-                  untag_fail_streak=$(( untag_fail_streak + 1 ))
-                  if (( untag_fail_streak >= UNTAG_FAIL_STREAK_MAX )); then
-                    echo "::error::${UNTAG_FAIL_STREAK_MAX} fallos seguidos de untag: el ACR no responde. Se abandona el barrido."
-                    break 2
-                  fi
-                  continue
-                fi
-              fi
-              echo "- \`${full}:${tag}\`" >> "$deleted_file"
-              deleted_count=$((deleted_count + 1))
-            done
+            # El cortocircuito abandona el barrido entero, como hacía el
+            # `break 2` de la versión secuencial. Se cierra el grupo primero,
+            # que aquel se saltaba.
+            if [[ -e "$circuit_file" ]]; then
+              echo "::endgroup::"
+              break
+            fi
 
             # Purga de manifests huérfanos. Sólo en modo barrido: los modos
             # dirigidos (intra-PR, cierre de PR) corren en cada push y deben
@@ -608,6 +708,9 @@ jobs:
             fi
             echo "::endgroup::"
           done <<< "$REPOS"
+          # El recuento sale del archivo: un contador en memoria no sobrevive
+          # a los subshells de `xargs -P`.
+          deleted_count=$(wc -l < "$deleted_file" | tr -d ' ')
 
           echo "count=$deleted_count" >> "$GITHUB_OUTPUT"
           echo "purged=$purged_count" >> "$GITHUB_OUTPUT"
