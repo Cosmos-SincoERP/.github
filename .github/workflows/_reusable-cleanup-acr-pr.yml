@@ -313,6 +313,11 @@ jobs:
           purged_count=0
           deleted_file=$(mktemp)
           untag_fail_file=$(mktemp)
+          # `<repo>\t<motivo>` de cada repositorio que quedó sin purgar. Un
+          # barrido que desetiqueta pero no purga no libera un solo byte, así
+          # que tiene que verse en el resumen y no sólo en un `::warning::`
+          # perdido entre cientos de líneas de log.
+          purge_skip_file=$(mktemp)
           # Cortocircuito: si el ACR deja de responder, reintentar tag por tag
           # sólo alarga el job hasta el timeout. A partir de este número de
           # fallos SEGUIDOS se deja de intentar y se reporta.
@@ -343,6 +348,67 @@ jobs:
           export STREAK_FILE="$streak_file"
           export CIRCUIT_FILE="$circuit_file"
           export PR_CACHE_DIR="$pr_cache_dir"
+
+          # Reintento con backoff para las LECTURAS del ACR de las que depende
+          # la purga. El ACR Basic falla transitoriamente aun con red sana: en
+          # la limpieza manual de croxpdeveus2001 fallaron 4 de 1.526
+          # verificaciones con `manifest show` y 4 de 6.718 borrados, y los 8
+          # resolvieron al primer reintento — del orden del 0,2%. Un barrido
+          # completo hace cientos de estas lecturas, así que sin reintento la
+          # guarda fail-closed de la purga se dispara casi siempre: el barrido
+          # desetiqueta, no purga, y no libera un solo byte mientras el log dice
+          # que corrió. Así llegó croxpdeveus2001 a 538,57 GB sobre los 10 GB
+          # del tier Basic.
+          #
+          # Uso: `az_leer <intentos> <archivo-stdout> <comando...>`. El stdout
+          # va al archivo y el stderr del último intento queda en `$az_err`,
+          # para que el llamador distinga un «ya no existe» de un fallo real.
+          az_leer() {
+            local intentos="$1" salida="$2"; shift 2
+            local i
+            for (( i = 1; i <= intentos; i++ )); do
+              if az_err=$("$@" 2>&1 > "$salida"); then
+                return 0
+              fi
+              if (( i < intentos )); then
+                sleep $(( i * 3 ))
+              fi
+            done
+            return 1
+          }
+          export -f az_leer
+
+          # Un error del ACR viene en varias líneas; los `::warning::` y el TSV
+          # de repositorios sin purgar necesitan una sola.
+          en_una_linea() {
+            tr '\n' ' ' <<< "$1" | cut -c1-200
+          }
+          export -f en_una_linea
+
+          # Hijos que referencia UN índice etiquetado. Corre bajo `xargs -P`:
+          # emite por stdout los digests hijos —que el llamador acumula en la
+          # lista de referenciados— y anota en `$3` el índice que no pudo
+          # resolver. Todo lo que no sea un digest va a stderr, o contaminaría
+          # esa lista.
+          resolver_referenciados() {
+            local acr="$1" full="$2" fail_file="$3" digest="$4"
+            local out
+            out=$(mktemp)
+            if az_leer 3 "$out" az acr manifest show -r "$acr" -n "${full}@${digest}" -o json; then
+              jq -r '.manifests[]?.digest' "$out" 2>/dev/null \
+                || printf '%s\n' "$digest" >> "$fail_file"
+            elif grep -qiE "(ManifestUnknown|does not exist|not found)" <<< "$az_err"; then
+              # El índice se fue entre el inventario y esta lectura: otro run lo
+              # purgó. No hay índice vivo que proteger, y sus hijos —si
+              # quedaron— son huérfanos de verdad.
+              echo "    ${digest:0:19}…: ya no existe — carrera con otro run" >&2
+            else
+              echo "    ${digest:0:19}…: no se pudo resolver tras 3 intentos: $(en_una_linea "$az_err")" >&2
+              printf '%s\n' "$digest" >> "$fail_file"
+            fi
+            rm -f "$out"
+          }
+          export -f resolver_referenciados
 
           # Estado de un PR, memoizado. Emite "<state>\t<closed_at>", o falla y
           # emite el HTTP que lo impidió. El archivo de caché se publica con
@@ -507,9 +573,25 @@ jobs:
             echo "::group::Repo $full"
 
             # Una sola lectura ordenada por fecha: alimenta el conjunto
-            # protegido y la aserción final.
-            tags_desc=$(az acr repository show-tags -n "$ACR" --repository "$full" \
-                          --orderby time_desc -o tsv 2>/dev/null || true)
+            # protegido y la aserción final. Con reintento porque de ella cuelga
+            # el repositorio entero: si falla, `tags_desc` queda vacío, no hay
+            # candidatos ni protegidos, y el repositorio se saltea sin que nada
+            # lo diga.
+            tags_file=$(mktemp)
+            if ! az_leer 3 "$tags_file" \
+                   az acr repository show-tags -n "$ACR" --repository "$full" \
+                     --orderby time_desc -o tsv; then
+              if grep -qiE "(RepositoryNotFound|does not exist|not found)" <<< "$az_err"; then
+                echo "  El repositorio no existe en el ACR: nada que hacer."
+              else
+                motivo="no se pudieron listar los tags tras 3 intentos ($(en_una_linea "$az_err"))"
+                echo "::warning::$full: $motivo. Repositorio OMITIDO en esta corrida."
+                printf '%s\t%s\n' "$full" "$motivo" >> "$purge_skip_file"
+              fi
+              echo "::endgroup::"
+              continue
+            fi
+            tags_desc=$(cat "$tags_file")
 
             protected_file=$(mktemp)
             grep -E '^pr-[0-9]+-[0-9a-f]{7}$' <<< "$tags_desc" \
@@ -603,37 +685,49 @@ jobs:
               # que alguien necesite re-pull. Con la lista incompleta NO se purga.
               referenced_file=$(mktemp)
               refs_fail_file=$(mktemp)
+              metadata_file=$(mktemp)
+              purgable=1
+              motivo=""
 
-              # Se relee el estado del repositorio: `tags_desc` es de ANTES del
-              # bucle de untag y ya no describe la realidad. Resolver un tag que
-              # este mismo run acaba de quitar falla siempre, se contabiliza como
-              # fallo de resolución y la purga se salta — o sea que bastaba UN
-              # untag para que la purga no corriera nunca más.
-              if ! tags_vigentes=$(az acr repository show-tags -n "$ACR" --repository "$full" -o tsv 2>&1); then
-                echo "::warning::$full: no se pudieron releer los tags tras el untag ($tags_vigentes). Purga de huérfanos OMITIDA en este repositorio."
-                printf 'relectura-de-tags\n' >> "$refs_fail_file"
-                tags_vigentes=""
+              # Un solo inventario del repositorio, leído DESPUÉS del bucle de
+              # untag —`tags_desc` es de antes y ya no describe la realidad— y
+              # del que salen las dos mitades de la decisión: los manifests CON
+              # tag, a resolver para no purgar a sus hijos, y los SIN tag, que
+              # son los candidatos. Al venir del mismo snapshot no hay ventana
+              # entre una lectura y la otra.
+              #
+              # Se resuelve por DIGEST y no por tag: varios tags apuntan al
+              # mismo índice —en croxpdeveus2001, 1.526 tags sobre 729
+              # manifests—, así que resolver por tag duplica las llamadas y con
+              # ellas las oportunidades de tropezar con la guarda de abajo.
+              if ! az_leer 3 "$metadata_file" \
+                     az acr manifest list-metadata -r "$ACR" -n "$full" \
+                       --orderby time_desc -o json; then
+                purgable=0
+                motivo="no se pudo leer el inventario de manifests tras 3 intentos ($(en_una_linea "$az_err"))"
               fi
 
-              if [[ -n "$tags_vigentes" ]]; then
-                grep -v '^$' <<< "$tags_vigentes" \
-                  | xargs -r -P 6 -I{} bash -c '
-                      if out=$(az acr manifest show -r "$0" -n "$1:$3" -o json 2>/dev/null); then
-                        jq -r ".manifests[]?.digest" <<< "$out" 2>/dev/null \
-                          || printf "%s\n" "$3" >> "$2"
-                      elif ! az acr repository show-tags -n "$0" --repository "$1" -o tsv 2>/dev/null \
-                             | grep -qxF "$3"; then
-                        : # el tag ya no existe (carrera con otro run): no hay índice que proteger
-                      else
-                        printf "%s\n" "$3" >> "$2"
-                      fi' \
+              if (( purgable == 1 )); then
+                jq -r '.[] | select((.tags // []) | length > 0) | .digest' "$metadata_file" \
+                  | xargs -r -P 6 -I{} \
+                      bash -c 'set -uo pipefail; resolver_referenciados "$0" "$1" "$2" "$3"' \
                       "$ACR" "$full" "$refs_fail_file" {} \
                   >> "$referenced_file" || true
+
+                if [[ -s "$refs_fail_file" ]]; then
+                  motivo="no se pudo resolver el manifest de $(wc -l < "$refs_fail_file" | tr -d ' ') índice(s) etiquetado(s), cada uno tras 3 intentos ($(cut -c1-19 "$refs_fail_file" | tr '\n' ' '))"
+                  purgable=0
+                fi
               fi
 
-              if [[ -s "$refs_fail_file" ]]; then
-                fail_n=$(wc -l < "$refs_fail_file" | tr -d ' ')
-                echo "::warning::$full: no se pudo resolver el manifest de ${fail_n} tag(s) ($(paste -sd' ' "$refs_fail_file")). Purga de huérfanos OMITIDA en este repositorio: con la lista de digests referenciados incompleta, un hijo de un índice vivo se vería como huérfano y el borrado por digest es irreversible."
+              if (( purgable == 0 )); then
+                # La guarda fail-closed sigue intacta: con la lista de digests
+                # referenciados incompleta, un hijo de un índice vivo se vería
+                # como huérfano, y el borrado por digest es irreversible —
+                # croxpdeveus2001 tiene el soft-delete deshabilitado. Lo que
+                # cambió es que ya no se llega acá por un hipo de un segundo.
+                echo "::warning::$full: $motivo. Purga de huérfanos OMITIDA en este repositorio: el untag de acá no liberó un solo byte."
+                printf '%s\t%s\n' "$full" "$motivo" >> "$purge_skip_file"
               else
                 # Fase 1 — DECIDIR, secuencial. Barata (no hace red) y auditable:
                 # cada descarte queda explicado en el log, en orden.
@@ -652,8 +746,8 @@ jobs:
                   fi
                   (( upd_epoch > cutoff )) && continue
                   printf '%s\n' "$digest" >> "$purgar_file"
-                done < <(az acr manifest list-metadata -r "$ACR" -n "$full" --orderby time_desc \
-                           --query "[?tags[0] == null].[digest, lastUpdateTime]" -o tsv 2>/dev/null || true)
+                done < <(jq -r '.[] | select((.tags // []) | length == 0) | [.digest, .lastUpdateTime] | @tsv' \
+                           "$metadata_file")
 
                 # Fase 2 — BORRAR, en paralelo. Es el 85% del tiempo del job:
                 # 1047 purgas secuenciales a ~1.5 s cada una consumieron 26 de
@@ -695,7 +789,16 @@ jobs:
             # recuentos —que bajen es lo esperado—, así que se verifica tag por
             # tag. Falla el job en vez de dejar un ambiente sin su imagen.
             if [[ "$DRY_RUN" != "true" ]]; then
-              tags_after=$(az acr repository show-tags -n "$ACR" --repository "$full" -o tsv 2>/dev/null || true)
+              # Con reintento por la misma razón que la lectura de arriba, y
+              # una más: una lectura fallida deja `tags_after` vacío y la
+              # aserción reporta como tags perdidos TODO el conjunto protegido.
+              after_file=$(mktemp)
+              if ! az_leer 3 "$after_file" \
+                     az acr repository show-tags -n "$ACR" --repository "$full" -o tsv; then
+                echo "::error::$full: no se pudieron releer los tags tras el cleanup ($(en_una_linea "$az_err")); la retención garantizada no se pudo verificar."
+                exit 1
+              fi
+              tags_after=$(cat "$after_file")
               perdidos=$(sort -u "$protected_file" | grep -vxF -f <(printf '%s\n' "$tags_after") || true)
               if [[ -n "$perdidos" ]]; then
                 echo "::error::$full perdió tags protegidos durante el cleanup: $(tr '\n' ' ' <<< "$perdidos")"
@@ -721,6 +824,9 @@ jobs:
             echo "untag_failed<<EOF"
             cat "$untag_fail_file" 2>/dev/null || true
             echo "EOF"
+            echo "purge_skipped<<EOF"
+            cat "$purge_skip_file" 2>/dev/null || true
+            echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
           # El job falla DESPUÉS de haber barrido todo lo que sí se pudo y de
@@ -742,6 +848,7 @@ jobs:
           PURGED: ${{ steps.cleanup.outputs.purged || 0 }}
           DETAIL: ${{ steps.cleanup.outputs.list }}
           UNTAG_FAILED: ${{ steps.cleanup.outputs.untag_failed }}
+          PURGE_SKIPPED: ${{ steps.cleanup.outputs.purge_skipped }}
           KEEP_LAST_PR: ${{ inputs.keep_last_pr }}
           KEEP_LAST_MAIN: ${{ inputs.keep_last_main }}
           PODA_MAIN: ${{ inputs.runner_group_prod != '' }}
@@ -764,10 +871,26 @@ jobs:
             fi
             echo "- Tags eliminados: **$COUNT**"
             echo "- Manifests huérfanos purgados: **$PURGED**"
+            # `untag` no libera bytes: sólo quita la referencia. Un barrido que
+            # desetiquetó mucho y purgó cero NO liberó espacio, y sin decirlo acá
+            # se lee como exitoso mientras el registry sigue creciendo.
+            if [[ -z "$PR_NUMBER" && "$DRY_RUN" != "true" && "$PURGED" == "0" ]]; then
+              echo "- ⚠️ **No se liberó espacio en el registry.** \`untag\` sólo quita la referencia; los bytes los libera la purga de manifests huérfanos, y esta corrida no purgó ninguno."
+            fi
             if [[ -n "$DETAIL" ]]; then
               echo ""
               echo "### Detalle"
               echo "$DETAIL"
+            fi
+            if [[ -n "$PURGE_SKIPPED" ]]; then
+              echo ""
+              echo "### Repositorios que quedaron sin purgar"
+              echo ""
+              echo "En estos repositorios la purga de huérfanos se omitió (fail-closed): el barrido pudo desetiquetar, pero **no liberó bytes**. Se reintenta en la corrida siguiente."
+              echo ""
+              while IFS=$'\t' read -r r m; do
+                [[ -n "$r" ]] && echo "- \`$r\` — $m"
+              done <<< "$PURGE_SKIPPED"
             fi
             if [[ -n "$UNTAG_FAILED" ]]; then
               echo ""
