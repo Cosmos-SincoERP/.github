@@ -10,7 +10,7 @@ informed: []
 
 ## Contexto y problema
 
-Hereda el marco general de [[0001]]. La organización opera hoy con un único ambiente: **desarrollo**. No existe ambiente de producción todavía; las políticas asociadas se documentan en [[0003]].
+Hereda el marco general de [[0001]]. La organización opera dos ambientes, **desarrollo** y **producción**. Este ADR fija el baseline que rige a todos los repos y su operación en desarrollo; lo que la existencia de producción agrega encima —Environments, gate de promoción y las prácticas diferidas— se documenta en [[0003]].
 
 Pregunta de decisión: para cada práctica del catálogo de [[0001]], ¿se aplica hoy, se difiere a [[0003]], o se descarta?
 
@@ -98,7 +98,7 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 
 #### B.6 — Require signed commits
 - **Decisión**: Diferir a [[0003]].
-- **Justificación**: alto costo de setup (GPG/SSH en cada máquina y agente IA); valor moderado en dev. Reevaluar para repos críticos cuando exista producción.
+- **Justificación**: alto costo de setup (GPG/SSH en cada máquina y agente IA); valor moderado en dev. Su reevaluación para repos críticos vive en [[0003]].
 
 #### B.7 — Require linear history
 - **Decisión**: Aplicar (org) — Fase 1.
@@ -118,7 +118,7 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 
 #### B.11 — Tag protection rules
 - **Decisión**: Diferir a [[0003]].
-- **Justificación**: sin releases formales productivos todavía, no hay tags estables que proteger más allá de los `@v1` de los reusables internos. Reevaluar cuando exista proceso de release.
+- **Justificación**: la promoción a producción no usa tags git, así que no hay tags estables que proteger más allá de los `@v1` de los reusables internos. Reevaluación en [[0003]].
 
 #### B.12 — Push rulesets (paths, extensiones, tamaño)
 - **Decisión**: Aplicar (org) — Fase 0.
@@ -183,8 +183,8 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 - **Justificación**: status checks son la barrera de calidad más confiable bajo flujo IA. No se puede forzar org-wide en Team (Required Workflows requiere Enterprise → ver D.10).
 
 #### D.2 — Environments con required reviewers
-- **Decisión**: Diferir a [[0003]].
-- **Justificación**: sin ambiente productivo, los environments tienen valor limitado.
+- **Decisión**: Diferir a [[0003]], que la decide.
+- **Justificación**: es una práctica de la capa de despliegue a producción; su lugar es [[0003]].
 
 #### D.3 — Pinning de acciones
 - **Decisión**: Aplicar — Fase 1, con política diferenciada por nivel de confianza del creator.
@@ -292,8 +292,8 @@ Cada práctica refiere al catálogo neutral de [[0001]] (descripción técnica d
 |---|---|
 | A.3 Creación de repos | Combinación deseada no expresable en Team. Reevaluar con Enterprise. |
 | B.6 Signed commits | Alto costo de setup, valor moderado en dev. Reevaluar para repos críticos. |
-| B.11 Tag protection | Sin releases productivos todavía. |
-| D.2 Environments con required reviewers | Sin ambiente productivo. |
+| B.11 Tag protection | Sin releases por tag git hacia producción. |
+| D.2 Environments con required reviewers | Práctica de la capa de despliegue a producción; decidida en [[0003]]. |
 | D.10 Required workflows org-wide | No disponible en Team; reevaluar con upgrade Enterprise. |
 | E.6 Reevaluación con GHAS | Si se sube a Enterprise, secret scanning + push protection nativo sustituye el reusable OSS. |
 | E.7 Code scanning / CodeQL | Reevaluar con GHAS o alternativas OSS en producción. |

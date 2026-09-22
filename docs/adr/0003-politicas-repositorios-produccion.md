@@ -1,6 +1,6 @@
 ---
-status: proposed
-date: 2026-05-25
+status: accepted
+date: 2026-09-22
 deciders: [augusto-romero-arango]
 consulted: []
 informed: []
@@ -8,33 +8,34 @@ informed: []
 
 # 0003 — Políticas de repositorios: ambiente de producción
 
-> **Estado**: este ADR está en `proposed` y se mantiene así hasta que se materialice un ambiente de producción (servicios desplegados de cara a clientes, datos productivos, requerimientos de disponibilidad/SLA). En ese momento se toman las decisiones marcadas como pendientes y el ADR pasa a `accepted`.
-
 ## Contexto y problema
 
-Hereda el marco general de [[0001]] y el baseline de desarrollo de [[0002]]. Hoy no hay ambiente de producción; las decisiones de gobernanza incluidas en [[0002]] son suficientes para dev pero quedan abiertas para cuando exista prod.
+Hereda el marco general de [[0001]] y el baseline de desarrollo de [[0002]]. La organización opera dos ambientes: **desarrollo** y **producción**. Producción sirve a clientes desde una suscripción dedicada, con varios bounded contexts y el plano de aplicación aprovisionados y con despliegues productivos en curso. Las decisiones de [[0002]] siguen rigiendo el día a día de los repos; este ADR registra lo que la existencia de producción agrega encima.
 
 Este ADR cubre:
 1. Las prácticas del catálogo de [[0001]] que [[0002]] difirió a producción.
 2. Prácticas nuevas que solo aplican en presencia de producción (environments, tag protection).
 3. Cambios de configuración de prácticas ya aplicadas en [[0002]] (potencial subida de approvals, signed commits, etc. para repos críticos).
 4. Activación del mecanismo de **custom properties** que [[0001]] adoptó como marco pero cuyos valores específicos se postergaron.
+5. Las **decisiones de plataforma** con las que se aprovisionó producción (suscripción, red, naming, state, gate de despliegue, registry) en la medida en que condicionan el contrato de los reusables y la operación de los repos.
 
-Pregunta de decisión (a tomar cuando producción se materialice): ¿qué tier de repos se define, qué prácticas adicionales activamos para qué tier, y bajo qué modelo se opera la diferenciación?
+Pregunta de decisión: ¿bajo qué modelo se suma producción al gobierno de los repos, qué prácticas adicionales se activan y cuáles siguen diferidas?
+
+Restricción que condiciona todo el ADR: la organización está en plan **Team** con repos privados. Los *required reviewers* de GitHub Environments exigen Enterprise y no están disponibles; los Environments con secrets/vars propios y las *deployment branch policies* sí lo están.
 
 ## Drivers de decisión
 
-Heredados de [[0001]] (a confirmar al activar este ADR):
+Heredados de [[0001]]:
 
 1. Reducción de superficie de riesgo (sube en producción: el blast radius de un bug incluye usuarios reales).
 2. Consistencia de gobierno entre repos (con tiering, "consistencia por tier").
 3. Fricción mínima viable para devs (puede subir tolerancia para repos críticos).
 4. Adaptación al flujo IA (la gate humana antes de prod sube su valor).
 
-Drivers nuevos potencialmente relevantes:
-- Auditoría y trazabilidad de cambios productivos.
-- Tiempo de respuesta a incidentes.
-- Requisitos contractuales/compliance (si aplican cuando exista prod).
+Drivers nuevos:
+- Auditoría y trazabilidad de cambios productivos: quién promovió qué, cuándo y desde qué commit.
+- Paridad con desarrollo: lo que llega a producción debe ser lo mismo que se probó en desarrollo, sin rebuilds ni configuración divergente por accidente.
+- Costo de entrada acotado: producción arranca en fase de pilotos y no justifica todavía rediseñar red, tiers ni plan de GitHub.
 
 ## Opciones consideradas — modelos para sumar producción al gobierno
 
@@ -45,7 +46,57 @@ Drivers nuevos potencialmente relevantes:
 
 ## Decisión (modelo)
 
-> **A rellenar cuando producción se materialice.** Las opciones C y D no son mutuamente excluyentes (se puede activar tiering y luego subir a Enterprise para complementar).
+Se adopta el **modelo A — sumar la capa de despliegue al baseline de [[0002]]**, uniforme para todo repo que despliega a producción:
+
+- Se agregan **GitHub Environments por ambiente** y un **gate de promoción a producción** (acto deliberado desde `main`, validado contra un team autorizado). Ver D.2 y la sección de decisiones de plataforma.
+- El resto del baseline de [[0002]] no se endurece por la llegada de producción.
+- **Sin tiering** (C) y **sin upgrade a Enterprise** (D) en esta fase. Ambos siguen disponibles como evoluciones y no son excluyentes entre sí; las prácticas que dependen de ellos quedan diferidas con su condición de activación.
+- Tag protection (B.11), parte natural de la opción A, sigue diferida: ver su sección.
+
+Justificación: producción arranca como réplica de desarrollo en fase de pilotos (driver de costo de entrada). La superficie de riesgo nueva es el acto de promover a producción, y es exactamente lo que cubre la capa de despliegue. Diferenciar repos por tier no tiene hoy una necesidad funcional que lo justifique.
+
+## Decisiones de plataforma de producción
+
+Estas decisiones se tomaron al aprovisionar producción. Se registran aquí porque condicionan el contrato de los reusables de este repo y la operación de todos los repos que despliegan. Los identificadores (A1…A12, D-ACR) son los del plan de aprovisionamiento de producción, que conserva la justificación completa y la evidencia de cada una, y los que citan los reusables en sus comentarios.
+
+**Directiva rectora**: producción es **réplica de desarrollo** en función y postura de seguridad. Los únicos deltas admitidos son de forma u operación (naming, región, rangos de red propios, suscripción, state, identidad de despliegue y gate). Ninguna pieza de producción endurece nada por cuenta propia: todo endurecimiento se hace primero en desarrollo.
+
+#### A11 — Suscripción dedicada
+- **Decisión**: producción vive en una suscripción propia, en el mismo tenant que desarrollo.
+- **Justificación**: aísla blast radius, RBAC y cuotas de servicios gestionados; separa por diseño la identidad de despliegue de producción de la de desarrollo.
+- **Consecuencia**: la identidad de despliegue y los backends de state de producción son nuevos; nada de desarrollo se reutiliza por nombre.
+
+#### A1 — Red: réplica exacta de desarrollo
+- **Decisión**: la red de producción copia la de desarrollo tal cual — redes aisladas por stack con exposición pública filtrada por reglas de red, **sin peering, sin private endpoints y sin DNS privado**. Único delta: rangos de direcciones propios y no solapados con desarrollo, para que un peering futuro sea posible sin renumerar.
+- **Justificación**: paridad con lo probado y costo de entrada acotado.
+- **Deuda aceptada**: la postura de red de producción hereda las aperturas y atajos de desarrollo. Su cierre es un endurecimiento que se hace primero en desarrollo y después se replica.
+
+#### A2 — Naming y tagging
+- **Decisión**: naming **CAF determinista** con el ambiente codificado en el nombre (`<tipo>-<carga>-<ambiente>-<región>-<instancia>`) en todos los stacks de producción, sin sufijos aleatorios; tagging con la convención de la plantilla canónica de infraestructura (claves en camelCase). Desarrollo no se migra.
+- **Justificación**: nombres predecibles antes del apply eliminan encadenamientos manuales entre stacks y hacen verificable por forma a qué ambiente pertenece un recurso.
+
+#### A4 — Ambiente como input de los reusables de Terraform
+- **Decisión**: los reusables de plan y apply reciben el ambiente como input (con desarrollo como default retrocompatible). De él derivan el backend de state, el GitHub Environment que declara el job y la variable de ambiente de Terraform.
+- **Justificación**: un solo contrato para ambos ambientes; el ambiente es un dato, no una bifurcación del reusable.
+
+#### A6 — State por stack
+- **Decisión**: una cuenta de state por stack dentro de la suscripción de producción, con el nombre de la cuenta, del grupo de recursos y de la clave derivados del stack y del ambiente según la convención de A2.
+- **Justificación**: replica el patrón de desarrollo y mantiene separado el blast radius del state por stack y por ambiente.
+
+#### A9 — GitHub Environments por repo
+- **Decisión**: cada repo que despliega tiene Environments `dev` y `prod`. Variables y secrets que dependen del ambiente viven en el Environment, con el **mismo nombre en ambos** para que el contrato de los reusables no cambie. `prod` tiene *deployment branch policy* restringida a `main`.
+- **Regla operativa**: todo valor que difiera por ambiente vive en el Environment, **nunca a nivel repo ni org**. GitHub resuelve Environment → repo → org, así que un valor de desarrollo definido a nivel repo y ausente en `prod` se resuelve en silencio en un despliegue de producción.
+- **Justificación**: disponible en Team para repos privados; separa configuración por ambiente sin duplicar workflows.
+
+#### A5 — Gate de promoción a producción
+- **Decisión**: PR ejecuta solo plan; merge a `main` aplica y despliega desarrollo automáticamente; producción se promueve **solo por `workflow_dispatch` sobre `main`**, y el run valida que quien lo dispara (y quien lo re-ejecuta) sea miembro activo del team autorizado del repo. El humano que dispara es la aprobación, auditada en el run.
+- **Alcance**: aplica a los reusables de apply de infraestructura y a los de despliegue de aplicaciones y fronts. En ellos rige el invariante **producción ⇒ gate**: un caller de producción que omite el team no despliega sin gate, falla cerrado.
+- **Justificación**: sustituye a los *required reviewers* de Environments, que exigen Enterprise. Cubre la misma superficie —nadie fuera del team promueve, y nunca desde una rama que no sea `main`— sin cambiar de plan.
+
+#### D-ACR — Producción consume el registry de desarrollo
+- **Decisión**: no hay registry de imágenes por ambiente. Producción despliega desde el registry de desarrollo de su bounded context, con acceso de solo lectura para su identidad de despliegue. Los registries siguen siendo **uno por bounded context**, para imputación de costos.
+- **Justificación**: la imagen que llega a producción es bit a bit la que corrió en desarrollo; la promoción es por tag, nunca por rebuild.
+- **Consecuencias**: la retención del registry debe proteger lo que producción tiene desplegado, que va por detrás de desarrollo; y las validaciones de coherencia ambiente↔recursos de los reusables excluyen el registry, que legítimamente lleva el marcador de desarrollo también en producción.
 
 ## Decisiones por práctica
 
@@ -61,28 +112,24 @@ Drivers nuevos potencialmente relevantes:
 - **Condición de activación**: upgrade a plan Enterprise.
 
 #### B.6 — Require signed commits
-- **Estado**: pendiente de decidir.
+- **Estado**: diferida.
 - **Opciones de tratamiento** cuando se aborde:
   - Activar para tier `critical` solamente (con plan de rollout de configuración GPG/SSH para devs y agentes IA).
   - Activar org-wide.
   - Mantener descartada (alto costo de setup vs valor).
-- **Condición de activación**: cuando exista producción o cuando un cliente/compliance lo requiera.
+- **Condición de activación**: cuando un cliente o un requisito de compliance lo exija, o al activar tiering. La existencia de producción, por sí sola, no la activó.
 
 #### B.11 — Tag protection rules
-- **Estado**: pendiente de decidir.
+- **Estado**: diferida.
 - **Opciones de tratamiento**:
   - Activar Tag ruleset org-wide protegiendo `v*` y `release-*` contra creación/borrado por actores no autorizados.
   - Activar solo en repos con tier `critical` o que publiquen releases.
   - Activar de forma parcial primero donde haya tags consumidos por toda la organización (p. ej. reusables internos referenciados por todos los consumidores).
-- **Condición de activación**: cuando exista proceso de release con tags que sirvan a despliegue productivo, o ya antes para proteger los tags de los reusables internos.
+- **Condición de activación**: cuando exista un proceso de release con tags git que sirvan a despliegue productivo, o ya antes para proteger los tags de los reusables internos. La promoción a producción de hoy no usa tags git (va por `workflow_dispatch` sobre `main`, ver A5), así que su llegada no la activó.
 
 #### D.2 — Environments con required reviewers
-- **Estado**: pendiente de decidir.
-- **Opciones de tratamiento**:
-  - Crear environments `staging` y `production` por repo con required reviewers + wait timer + branch restrictions.
-  - Crear solo `production` con reviewers; `staging` sin reviewers.
-  - No usar environments; gate humano se da vía aprobación de PR.
-- **Condición de activación**: cuando exista despliegue a un ambiente productivo.
+- **Decisión**: Aplicar **sin required reviewers**. Environments `dev` y `prod` por repo (A9), con *deployment branch policy* `main` en `prod`; el gate humano lo da el `workflow_dispatch` validado contra el team autorizado (A5).
+- **Justificación**: los required reviewers exigen Enterprise. Sin ambiente de staging, un Environment intermedio no aporta. Reevaluar los required reviewers nativos si se sube a Enterprise.
 
 #### D.10 — Required workflows org-wide
 - **Estado**: descartada para Team. Reevaluar si se sube a Enterprise.
@@ -99,16 +146,16 @@ Drivers nuevos potencialmente relevantes:
 - **Condición de activación**: upgrade a Enterprise + GHAS.
 
 #### E.7 — Code scanning / CodeQL
-- **Estado**: pendiente de decidir.
+- **Estado**: diferida.
 - **Opciones de tratamiento**:
   - Activar CodeQL en los repos públicos (gratis); diferir privados.
   - Reusables `_reusable-codeql.yml` para públicos + `_reusable-semgrep.yml` (OSS rules) para privados.
   - Esperar GHAS para cobertura completa pública + privada con CodeQL nativo.
   - Descartar SAST por completo (decisión explícita).
-- **Condición de activación**: revisar al materializarse producción O al evaluar upgrade Enterprise/GHAS.
+- **Condición de activación**: al evaluar upgrade Enterprise/GHAS, o si un requisito de cliente o compliance exige SAST antes.
 
 #### E.8 — Private vulnerability reporting
-- **Estado**: pendiente de decidir.
+- **Estado**: diferida.
 - **Opciones de tratamiento**:
   - Activar org-wide.
   - Activar solo en repos públicos.
@@ -116,7 +163,7 @@ Drivers nuevos potencialmente relevantes:
 - **Condición de activación**: cuando se decida activar también E.9 (canal documentado en SECURITY.md).
 
 #### E.9 — `SECURITY.md`
-- **Estado**: pendiente de decidir.
+- **Estado**: diferida.
 - **Opciones de tratamiento**:
   - Plantilla en el repo `.github` de la org con canal de reporte (PVR si E.8 activado, mail dedicado en caso contrario), versiones soportadas, política de respuesta.
   - Solo en repos públicos.
@@ -133,7 +180,7 @@ Drivers nuevos potencialmente relevantes:
 ### Práctica nueva: activación del tiering (B.14 valores)
 
 #### Tiering por `repo-tier`
-- **Estado**: el mecanismo está disponible desde [[0001]] (modelo D); falta definir valores.
+- **Estado**: diferido. El mecanismo está disponible desde [[0001]] (modelo D); no se definen valores en esta fase (ver Decisión).
 - **Opciones de valores propuestas** (a refinar al decidir):
   - `critical | standard | sandbox` (tres niveles)
   - `critical | standard` (dos niveles)
@@ -142,7 +189,7 @@ Drivers nuevos potencialmente relevantes:
 - **Otras custom properties potencialmente útiles**:
   - `stack`: para targeting de reusables o políticas específicas por stack.
   - `domain`: dominio funcional, para reporting y CODEOWNERS.
-- **Condición de activación**: cuando la diferenciación por tier sea funcionalmente necesaria (típicamente al materializarse producción; podría ser antes si surge razón específica).
+- **Condición de activación**: cuando la diferenciación por tier sea funcionalmente necesaria — p. ej. repos con requisitos de disponibilidad o compliance que no se quieran imponer al resto.
 
 ### Posible cambio: subir N approvals para repos críticos (B.2)
 
@@ -184,13 +231,17 @@ Señales que harían que evaluar el upgrade tenga sentido:
 
 ## Consecuencias
 
-> **A rellenar cuando se acepte este ADR.** Esquema previsto:
->
-> - ✅ Diferenciación por tier permite endurecer críticos sin friccionar sandboxes.
-> - ✅ Environments + tag protection cubren la superficie de riesgo productiva.
-> - ⚠️ Operativo: clasificación inicial del portafolio requiere alineación con dueños de servicio.
-> - ⚠️ Subir approvals + signed commits en `critical` introduce fricción notable; gestionar comunicación.
-> - ⚠️ Si no se sube a Enterprise, secret scanning y CodeQL en privados siguen como mitigaciones manuales.
+- ✅ **La promoción a producción es un acto deliberado y auditado**: solo desde `main`, solo por un miembro del team autorizado, con el run como registro. Sin depender de Enterprise.
+- ✅ **Paridad desarrollo↔producción por construcción**: mismo código de workflow con el ambiente como input, mismas imágenes (D-ACR), mismos SKUs y red. Lo que se probó en desarrollo es lo que corre en producción.
+- ✅ **Recursos verificables por forma**: el naming determinista con el ambiente codificado permite que los reusables validen coherencia ambiente↔recursos y fallen cerrado ante un caller mal cableado.
+- ⚠️ **Deuda de red aceptada (A1)**: producción hereda la postura de red de desarrollo. Se mitiga endureciendo primero desarrollo; ninguna pieza de producción diverge por su cuenta.
+- ⚠️ **Precedencia de variables como trampa (A9)**: un valor por ambiente definido a nivel repo u org se filtra en silencio a producción si falta en el Environment `prod`. Se mitiga con la regla operativa de A9 y documentando la precedencia en cada reusable que resuelve `vars`.
+- ⚠️ **Registry compartido entre ambientes (D-ACR)**: la retención del registry de desarrollo pasa a proteger imágenes de producción; una poda ciega le borraría a producción lo que tiene corriendo. Se mitiga excluyendo de la poda el conjunto desplegado en ambos ambientes.
+- ⚠️ **Sin tiering ni Enterprise**: signed commits, tag protection, SAST y secret scanning nativo en privados siguen diferidos o como mitigaciones OSS.
+
+## Control de cambios
+
+- **2026-09-22** — Pasa de `proposed` a `accepted` al registrar un ambiente de producción ya operando. Se retira la nota de estado que condicionaba el ADR a la existencia de producción; se rellenan Decisión (modelo A) y Consecuencias; se agrega la sección de decisiones de plataforma de producción (A1, A2, A4, A5, A6, A9, A11, D-ACR); D.2 pasa de opciones a decisión; el resto de las prácticas pasa de "pendiente" a "diferida" con su condición de activación actualizada.
 
 ## Referencias
 
