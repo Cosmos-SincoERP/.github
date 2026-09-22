@@ -173,7 +173,9 @@ on:
           `github.actor` — y en un RE-RUN también `github.triggering_actor`,
           cuando viene informado y difiere — sea miembro ACTIVO de ese team
           antes de construir o publicar nada, y falla si no (gate A5). Requiere
-          el secret ACTOR_GATE_TOKEN. Vacío → sin gate (comportamiento actual).
+          el secret ACTOR_GATE_TOKEN. Vacío → sin gate SOLO fuera de prod; con
+          environment=prod el gate es obligatorio y la ausencia de team falla
+          el job (fail-closed).
         type: string
         required: false
         default: ""
@@ -208,21 +210,16 @@ jobs:
       # sobrescribe al workspace porque el default del job apunta a una ruta del
       # repo que aún no existe (el checkout viene después).
       #
-      # OPT-IN: el `if:` se activa SOLO con `authorized_actor_team` poblado, a
-      # diferencia del gate gemelo de `_reusable-terraform-apply.yml`, que además
-      # lo activa con `environment == 'prod'`. La razón es de migración, no de
-      # criterio: los callers prod de front llevan hoy el gate como una RÉPLICA
-      # manual en un job propio (un job `uses:` no admite `steps:`) y ninguno
-      # pasa `ACTOR_GATE_TOKEN` al reusable, así que el invariante `prod ⇒ gate`
-      # los denegaría a todos de golpe. El cuerpo del step SÍ es el mismo
-      # —incluido el chequeo `prod ⇒ team obligatorio`, hoy inalcanzable— para
-      # que, cuando los callers hayan migrado, activar el invariante sea cambiar
-      # solo esta línea `if:` y ya no rompa a nadie.
+      # INVARIANTE `prod ⇒ gate`, igual que el gemelo de `_reusable-terraform-apply.yml`:
+      # el `if:` corre el step cuando hay team O cuando el ambiente es prod — aunque falte
+      # el team, en cuyo caso el propio step deniega. Así un caller prod que olvide
+      # `authorized_actor_team` NO despliega sin gate; antes de esto habría pasado de largo.
       #
-      # Idempotente con la réplica: un caller que conserve su job `gate` y además
-      # pase el input evalúa el mismo predicado dos veces, con el mismo veredicto.
+      # Nació opt-in (solo con el team poblado) porque los callers prod llevaban el gate
+      # como réplica manual y ninguno pasaba `ACTOR_GATE_TOKEN` al reusable. Migrados los
+      # 32 (Cosmos-SincoERP/.github#183), activar el invariante ya no rompe a nadie.
       - name: Gate de actor autorizado
-        if: inputs.authorized_actor_team != ''
+        if: inputs.authorized_actor_team != '' || inputs.environment == 'prod'
         working-directory: ${{ github.workspace }}
         shell: bash
         env:
