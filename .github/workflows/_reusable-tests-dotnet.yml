@@ -38,6 +38,25 @@ on:
         type: string
         required: false
         default: ""
+      test_runner:
+        description: >
+          Dialecto de `dotnet test` a usar: `auto` | `vstest` | `mtp`.
+          `auto` (default) detecta el modo leyendo `test.runner` del `global.json` del
+          consumidor (la mitad local del opt-in oficial de MTP), replicando la búsqueda
+          hacia arriba que hace el propio SDK. `vstest` y `mtp` fuerzan el dialecto.
+        type: string
+        required: false
+        default: "auto"
+      mtp_test_args:
+        description: >
+          Argumentos que se pasan a cada módulo de test (después del `--`) SOLO en modo MTP.
+          El default produce el TRX de xunit v3. Cámbialo si el repo usa otro framework:
+          `--report-trx` (MSTest/NUnit) exige referenciar `Microsoft.Testing.Extensions.TrxReport`,
+          que xunit v3 NO trae (solo `.Abstractions`), y sin la extensión el módulo rechaza
+          la opción con exit code 5.
+        type: string
+        required: false
+        default: "--report-xunit-trx"
 
 permissions:
   contents: read
@@ -84,6 +103,55 @@ jobs:
           echo "target=$target" >> "$GITHUB_OUTPUT"
           echo "Target resuelto: $target"
 
+      - name: Resolver modo de test (VSTest | MTP)
+        id: runner
+        env:
+          FORCED: ${{ inputs.test_runner }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$FORCED" != "auto" ]]; then
+            if [[ "$FORCED" != "vstest" && "$FORCED" != "mtp" ]]; then
+              echo "::error::test_runner inválido: '$FORCED'. Valores: auto | vstest | mtp."
+              exit 1
+            fi
+            echo "mode=$FORCED" >> "$GITHUB_OUTPUT"
+            echo "Modo forzado por input test_runner: $FORCED"
+            exit 0
+          fi
+
+          # El opt-in oficial de MTP vive en el repo consumidor, no acá. El SDK lo busca
+          # subiendo desde el cwd hasta el primer global.json; replicamos esa búsqueda para
+          # que `global.json` sea la única fuente de verdad y el consumidor no tenga que
+          # declarar su modo dos veces. DOTNET_TEST_RUNNER (≥ .NET 11 P6) tiene precedencia,
+          # igual que en el SDK.
+          mode=vstest
+          origen="(default)"
+
+          minus() { tr '[:upper:]' '[:lower:]'; }
+
+          if [[ -n "${DOTNET_TEST_RUNNER:-}" ]]; then
+            origen="DOTNET_TEST_RUNNER=$DOTNET_TEST_RUNNER"
+            [[ "$(printf '%s' "$DOTNET_TEST_RUNNER" | minus)" == "microsoft.testing.platform" ]] && mode=mtp
+          else
+            dir="$PWD"
+            root="${GITHUB_WORKSPACE:-/}"
+            while :; do
+              if [[ -f "$dir/global.json" ]]; then
+                runner=$(jq -r '.test.runner // empty' "$dir/global.json" 2>/dev/null || true)
+                origen="$dir/global.json (test.runner='${runner:-<ausente>}')"
+                [[ "$(printf '%s' "$runner" | minus)" == "microsoft.testing.platform" ]] && mode=mtp
+                break
+              fi
+              [[ "$dir" == "$root" || "$dir" == "/" ]] && break
+              dir=$(dirname "$dir")
+            done
+          fi
+
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "Modo detectado: $mode — origen: $origen"
+
       - name: Restore
         run: dotnet restore "${{ steps.resolve.outputs.target }}"
 
@@ -96,19 +164,63 @@ jobs:
           CONFIG: ${{ inputs.configuration }}
           RESULTS: ${{ runner.temp }}/test-results
           EXCLUDED: ${{ inputs.excluded_projects }}
+          MODE: ${{ steps.runner.outputs.mode }}
+          MTP_ARGS: ${{ inputs.mtp_test_args }}
         shell: bash
         run: |
           set -euo pipefail
-          common_args=(
-            --configuration "$CONFIG"
-            --no-build
-            --logger "trx;LogFileName=test-results.trx"
-            --results-directory "$RESULTS"
-          )
+
+          # VSTest y MTP no comparten línea de comando. Las diferencias que importan acá:
+          #   - target:     posicional          vs  --solution / --project (excluyentes entre sí)
+          #   - TRX:        --logger "trx;…"    vs  flag del framework tras `--`
+          #                 (en MTP el --logger se reenvía a la app, que lo rechaza con exit 5)
+          #   - cero tests: exit 0              vs  exit 8  → --ignore-exit-code 8
+          #   - no-test:    no-op silencioso    vs  exit 1  → hay que filtrar antes de iterar
+          if [[ "$MODE" == "mtp" ]]; then
+            common_args=(
+              --configuration "$CONFIG"
+              --no-build
+              --results-directory "$RESULTS"
+            )
+            # Tras `--` van los argumentos de cada módulo de test. Sin nombre de archivo:
+            # el default de xunit lleva usuario + host + timestamp con microsegundos, así que
+            # los módulos no se pisan el TRX en el layout plano (el --results-directory-layout
+            # per-module llega en .NET 11 RC1, no está en el 10).
+            app_args=( --ignore-exit-code 8 )
+            read -r -a extra_args <<< "$MTP_ARGS"
+            app_args+=( "${extra_args[@]}" )
+          else
+            common_args=(
+              --configuration "$CONFIG"
+              --no-build
+              --logger "trx;LogFileName=test-results.trx"
+              --results-directory "$RESULTS"
+            )
+            app_args=()
+          fi
+
+          # `dotnet test` con un solo target, en el dialecto que toque.
+          run_target() {
+            local path="$1"
+            if [[ "$MODE" != "mtp" ]]; then
+              dotnet test "$path" "${common_args[@]}"
+              return
+            fi
+            local selector=--solution
+            [[ "$path" == *.csproj ]] && selector=--project
+            dotnet test "$selector" "$path" "${common_args[@]}" -- "${app_args[@]}"
+          }
 
           if [[ -z "$EXCLUDED" ]]; then
-            dotnet test "$TARGET" "${common_args[@]}"
+            # Sin exclusiones no hace falta enumerar nada: en MTP el SDK ya se queda solo
+            # con los proyectos de test del .sln, y además los corre en paralelo.
+            run_target "$TARGET"
             exit 0
+          fi
+
+          if [[ "$TARGET" == *.csproj ]]; then
+            echo "::error::excluded_projects requiere un .sln/.slnx como target, no un .csproj ('$TARGET')."
+            exit 1
           fi
 
           mapfile -t exclude_list < <(
@@ -136,17 +248,42 @@ jobs:
                 break
               fi
             done
-            [[ "$skip" == false ]] && to_test+=("$proj")
+            [[ "$skip" == true ]] && continue
+
+            # En VSTest un proyecto sin tests es un no-op, así que iterar sobre todo el .sln
+            # sale gratis. En MTP `dotnet test --project <no-test>` sale con 1, así que hay
+            # que preguntarle a MSBuild cuáles son de verdad proyectos de test. No se puede
+            # evaluar sobre el .sln (MSB1063), toca proyecto por proyecto (~1-2 s cada uno;
+            # -getProperty solo evalúa, no compila).
+            # Se mira la unión de las dos propiedades a propósito: IsTestProject la pone
+            # Microsoft.NET.Test.Sdk (ausente en proyectos xunit v3 puros) y
+            # IsTestingPlatformApplication la ponen los paquetes MTP. Un proyecto de test que
+            # solo soporte VSTest matchea por la primera y entra al bucle, donde `dotnet test`
+            # lo rechaza ruidosamente — que es lo que queremos: un repo a medio migrar tiene
+            # que dar rojo, no perder tests en silencio.
+            if [[ "$MODE" == "mtp" ]]; then
+              es_test=$(
+                dotnet build "$proj" -getProperty:IsTestProject -getProperty:IsTestingPlatformApplication 2>/dev/null \
+                  | jq -r '[.Properties.IsTestProject, .Properties.IsTestingPlatformApplication] | index("true") != null' \
+                  2>/dev/null || echo false
+              )
+              [[ "$es_test" == "true" ]] || continue
+            fi
+
+            to_test+=("$proj")
           done
+
+          if [[ ${#to_test[@]} -eq 0 ]]; then
+            echo "::error::No quedó ningún proyecto de test tras aplicar excluded_projects."
+            exit 1
+          fi
 
           echo "Proyectos sometidos a dotnet test:"
           printf '  - %s\n' "${to_test[@]}"
 
-          # `dotnet test` sobre un proyecto sin tests no falla — simplemente no
-          # descubre nada. Iterar evita distinguir test-projects de no-test.
           failed=0
           for proj in "${to_test[@]}"; do
-            if ! dotnet test "$proj" "${common_args[@]}"; then
+            if ! run_target "$proj"; then
               failed=1
             fi
           done
@@ -180,5 +317,6 @@ jobs:
             echo "| Configuración | \`${{ inputs.configuration }}\` |"
             echo "| .NET SDK | \`${{ inputs.dotnet_version }}\` |"
             echo "| Working dir | \`${{ inputs.working_directory }}\` |"
+            echo "| Runner de test | \`${{ steps.runner.outputs.mode }}\` (input: \`${{ inputs.test_runner }}\`) |"
             echo "| Excluidos | ${excluded_display} |"
           } >> "$GITHUB_STEP_SUMMARY"
