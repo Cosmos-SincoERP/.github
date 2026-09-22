@@ -158,6 +158,22 @@ SDK. `DOTNET_TEST_RUNNER` (≥ .NET 11 P6) tiene precedencia, también igual que
 y quitar el pin `xunit.v3.mtp-off` si el repo lo tiene (ese paquete saca `Microsoft.Testing.*`
 del grafo y es justo lo que impide MTP).
 
+Tres trampas que aparecieron migrando Reconocimiento, Impuestos y Radicacion:
+
+1. **`<OutputType>Exe</OutputType>` explícito.** Al sacar `Microsoft.NET.Test.Sdk` —que es el
+   host de VSTest y no hace falta bajo MTP— se pierde el `OutputType` que ponía. xunit v3 falla
+   el build pidiéndolo, porque en v3 el proyecto de test **es** un ejecutable.
+2. **`dotnet test <archivo.sln>` deja de funcionar.** En MTP la solución va por `--solution`; la
+   ruta suelta se rechaza. Revisá los hooks de git y los workflows propios del repo, no solo los
+   que llaman al reusable — Radicacion tenía un `pre-push` que se habría roto para todos.
+3. **`--filter` y `--logger` son de VSTest.** El trait pasa a `--filter-trait` y el TRX a
+   `--report-xunit-trx [--report-xunit-trx-filename X]`, y ambos van **después del `--`** porque
+   son argumentos del módulo de test. Si algo aguas abajo lee el TRX por nombre, fijá el nombre:
+   el default lleva usuario, host y timestamp.
+
+El esquema del TRX no cambia: mismo namespace y mismos contadores `total`/`executed`/`passed`/
+`failed`, así que las compuertas que parsean el TRX siguen sirviendo sin tocarlas.
+
 > ⚠️ El default de `mtp_test_args` es el TRX de **xunit v3**. `--report-trx` (MSTest/NUnit)
 > exige referenciar `Microsoft.Testing.Extensions.TrxReport`, que xunit v3 **no** trae
 > —solo `.Abstractions`—; sin la extensión el módulo rechaza la opción con **exit code 5**.
