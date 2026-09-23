@@ -4,22 +4,28 @@
 # Cambios locales se sobrescriben por el sync workflow.
 # Para personalizar: editar el template fuente o añadir override al manifest.
 # El token {{ terraform_directory }} se sustituye por el sync con el valor de
-# overrides.terraform_directory en el manifest (default: "/").
+# overrides.terraform_directory en el manifest (default: "/"), y
+# {{ terraform_modules_glob }} por "<terraform_directory>/modules/*".
 # ─────────────────────────────────────────────────────────────────
 version: 2
 updates:
-  # Ajustar `directory` al subdir donde viven los .tf (típicamente /infra,
-  # /infraestructura, etc.). El default "/" rara vez aplica.
+  # Raíz del stack y cada módulo local: cada módulo declara su propio
+  # `required_providers`. Si Dependabot solo mira la raíz, un bump major
+  # (p. ej. azurerm 4 → 5) deja la raíz en `~> 5.x` y los módulos en `~> 4.0`,
+  # y `terraform init` falla porque ninguna versión cumple ambas restricciones.
+  # `group-by: dependency-name` sube cada provider en todos los directorios en
+  # un solo PR.
   - package-ecosystem: "terraform"
-    directory: "{{ terraform_directory | default('/') }}"
+    directories:
+      - "{{ terraform_directory | default('/') }}"
+      - "{{ terraform_modules_glob }}"
     schedule:
       interval: "weekly"
       day: "thursday"
     open-pull-requests-limit: 5
     groups:
-      all:
-        applies-to: version-updates
-        patterns: ["*"]
+      providers:
+        group-by: dependency-name
 
   - package-ecosystem: "github-actions"
     directory: "/"

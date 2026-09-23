@@ -32,8 +32,13 @@ render_dependabot() {
     return 1
   fi
 
+  # Glob de módulos locales: "/infra" → "/infra/modules/*", "/" → "/modules/*".
+  local terraform_modules_glob="${terraform_directory%/}/modules/*"
+
   # Render base. Delimitador `#` (no `|`) porque el patrón contiene un `|` literal.
-  sed "s#{{ terraform_directory | default('/') }}#$terraform_directory#g" "$template"
+  sed -e "s#{{ terraform_directory | default('/') }}#$terraform_directory#g" \
+      -e "s#{{ terraform_modules_glob }}#$terraform_modules_glob#g" \
+      "$template"
 
   # Appendear bloque docker si hay docker_directories en overrides del manifest.
   # Una sola entrada con `directories:` plural (Dependabot lo soporta desde 2024;
