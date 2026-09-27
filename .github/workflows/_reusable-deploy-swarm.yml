@@ -495,6 +495,9 @@ jobs:
           # updates que quedan colgados (pull lento, arranque con migraciones…).
           TIMEOUT_SECONDS: "300"
           POLL_INTERVAL: "8"
+          # Tope por lectura de diagnóstico (`service ps` / `service logs`) de un
+          # servicio que no convergió.
+          DUMP_READ_TIMEOUT: "30"
         # `docker stack deploy` retorna apenas Swarm ACEPTA el spec, no cuando el
         # contenedor nuevo queda sano. Sin esto, un update que falla y Swarm
         # revierte (`failure_action: rollback`) o pausa se reporta como deploy
@@ -510,29 +513,52 @@ jobs:
             exit 1
           fi
 
+          # Corre una lectura de diagnóstico con límite de tiempo y deja en <out>
+          # su salida recortada (head|tail -n <n>). `docker service logs` puede
+          # colgarse con tareas cuyo contenedor ya no existe: sin límite, el job
+          # muere por timeout-minutes, termina `cancelled` y nunca llega al
+          # veredicto. Si la lectura se corta, lo dice en vez de quedar vacía.
+          read_bounded() {
+            local out="$1" trim="$2" n="$3" raw rc; shift 3
+            raw=$(mktemp)
+            timeout -k 5s "$DUMP_READ_TIMEOUT" "$@" > "$raw" 2>&1
+            rc=$?
+            "$trim" -n "$n" "$raw" > "$out"
+            if (( rc == 124 || rc == 137 )); then
+              echo "[lectura cortada: excedió ${DUMP_READ_TIMEOUT}s; la salida de arriba puede estar incompleta]" >> "$out"
+            fi
+            rm -f "$raw"
+          }
+
           # Vuelca el porqué de un servicio que no convergió: error de la tarea
           # (columna Error de `service ps`) + logs del contenedor (la excepción real).
+          # Best-effort: cada lectura va acotada y se hace una sola vez, para el
+          # resumen y para el log del job; el veredicto no depende de ella.
           dump() {
-            local full="$1"
+            local full="$1" ps_out logs_out
+            ps_out=$(mktemp); logs_out=$(mktemp)
+            read_bounded "$ps_out" head 40 docker service ps "$full" --no-trunc \
+              --format 'table {{.Name}}\t{{.Image}}\t{{.Node}}\t{{.DesiredState}}\t{{.CurrentState}}\t{{.Error}}'
+            read_bounded "$logs_out" tail 120 docker service logs "$full" --tail 120 --no-trunc --timestamps
             {
               echo ""
               echo "### ❌ \`$full\` no convergió"
               echo ""
               echo "**Tareas — \`docker service ps --no-trunc\`:**"
               echo '```'
-              docker service ps "$full" --no-trunc \
-                --format 'table {{.Name}}\t{{.Image}}\t{{.Node}}\t{{.DesiredState}}\t{{.CurrentState}}\t{{.Error}}' 2>&1 | head -40
+              cat "$ps_out"
               echo '```'
               echo ""
               echo "**Logs — \`docker service logs --tail 120\`:**"
               echo '```'
-              docker service logs "$full" --tail 120 --no-trunc --timestamps 2>&1 | tail -120
+              cat "$logs_out"
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
             echo "----- service ps: $full -----"
-            docker service ps "$full" --no-trunc 2>&1 | head -40
+            cat "$ps_out"
             echo "----- service logs: $full -----"
-            docker service logs "$full" --tail 120 --no-trunc 2>&1 | tail -120
+            cat "$logs_out"
+            rm -f "$ps_out" "$logs_out"
           }
 
           # Deja en VERDICT (ok|fail|pending) + V_STATE/V_REPS el estado actual del
