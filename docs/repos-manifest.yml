@@ -15,6 +15,10 @@
 #   docker_directories:  list    — paths con Dockerfiles a trackear por
 #                                  Dependabot (genera un bloque docker en
 #                                  el dependabot.yml propagado)
+#   npm_directories:     list    — paths con package.json (fuera de la raíz;
+#                                  la raíz la cubre el template node-bun) a
+#                                  trackear por Dependabot (genera un bloque
+#                                  npm, semanal los martes, agrupado en `all`)
 #
 # Ver Pieza 1 del plan: docs/adr/0002 §E.3 (managed sync).
 # ─────────────────────────────────────────────────────────────────
@@ -144,6 +148,8 @@ repos:
     overrides:
       docker_directories:
         - /src/ApplicationPlane.Gateway
+      npm_directories:
+        - /src/ApplicationPlane.IdentityAccess/app
 
   - name: ApplicationPlane.Infraestructura
     stack: terraform

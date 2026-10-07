@@ -99,6 +99,22 @@ paths_detect_docker_dirs() {
     | sort -u
 }
 
+# Detecta directorios con package.json FUERA de la raíz (la raíz ya la cubre
+# el template del stack node-bun). Stdout: una línea por dir, prefijo /,
+# deduplicado y ordenado. Vacío (y exit 0) si no hay.
+#   stdin = paths
+paths_detect_npm_dirs() {
+  local matches
+  matches="$(_paths_maxdepth 6 | grep -E '/package\.json$' 2>/dev/null | grep -vE '(^|/)node_modules/' 2>/dev/null || true)"
+  [ -z "$matches" ] && return 0
+  printf '%s\n' "$matches" \
+    | while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        echo "/$(dirname "$f")"
+      done \
+    | sort -u
+}
+
 # Detecta terraform_directory según convención del manifest:
 #   - *.tf en raíz                → vacío (default "/", sin override)
 #   - infra/*.tf existe           → /infra
@@ -133,5 +149,6 @@ _dir_paths() {
 
 scan_detect_stack()         { _dir_paths "$1" | paths_detect_stack; }
 scan_detect_docker_dirs()   { _dir_paths "$1" | paths_detect_docker_dirs; }
+scan_detect_npm_dirs()      { _dir_paths "$1" | paths_detect_npm_dirs; }
 scan_detect_terraform_dir() { _dir_paths "$1" | paths_detect_terraform_dir; }
 scan_stack_marker_exists()  { _dir_paths "$1" | paths_stack_marker_exists "$2"; }

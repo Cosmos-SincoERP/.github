@@ -128,7 +128,7 @@ $ bash .github/scripts/scan-repo.sh Cosmos.NuevoRepo
         - /Cosmos.NuevoRepo.API
 ```
 
-Heurísticas: `*.csproj`/`*.sln`→`dotnet`, `package.json`→`node-bun`, `*.tf`→`terraform`, sino `github-actions`. Detecta `Dockerfile`s para `docker_directories` y `/infra` como `terraform_directory` cuando aplica. La salida es una sugerencia — revisar antes de pegar.
+Heurísticas: `*.csproj`/`*.sln`→`dotnet`, `package.json`→`node-bun`, `*.tf`→`terraform`, sino `github-actions`. Detecta `Dockerfile`s para `docker_directories`, `package.json` fuera de la raíz para `npm_directories` (bloque `npm` semanal los martes) y `/infra` como `terraform_directory` cuando aplica. La salida es una sugerencia — revisar antes de pegar.
 
 ## Repositorios relacionados
 

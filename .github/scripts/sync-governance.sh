@@ -50,9 +50,9 @@ section(){ echo; echo "═══ $* ═══"; }
 # ─── Lógica principal por repo ───────────────────────────────────────────────
 
 # Procesa un repo: detecta cambios necesarios y aplica si !DRY_RUN.
-# Args: name, stack, consumes (csv), terraform_directory, docker_dirs_csv
+# Args: name, stack, consumes (csv), terraform_directory, docker_dirs_csv, npm_dirs_csv
 process_repo() {
-  local name="$1" stack="$2" consumes="$3" terraform_directory="$4" docker_dirs_csv="${5:-}"
+  local name="$1" stack="$2" consumes="$3" terraform_directory="$4" docker_dirs_csv="${5:-}" npm_dirs_csv="${6:-}"
   local owner_repo="$ORG/$name"
 
   section "$owner_repo (stack=$stack, consumes=[$consumes])"
@@ -74,7 +74,7 @@ process_repo() {
   # ─ Cambio 1: dependabot.yml ──────────────────────────────────────────────
   if [[ ",$consumes," == *,dependabot,* ]] && [[ "$ONLY" == "all" || "$ONLY" == "dependabot" ]]; then
     local desired current
-    desired="$(render_dependabot "$stack" "$terraform_directory" "$docker_dirs_csv")" || { COUNT_FAILED+=1; FAILED_REPOS+=("$owner_repo (template error)"); return 0; }
+    desired="$(render_dependabot "$stack" "$terraform_directory" "$docker_dirs_csv" "$npm_dirs_csv")" || { COUNT_FAILED+=1; FAILED_REPOS+=("$owner_repo (template error)"); return 0; }
     current="$(fetch_remote_file "$owner_repo" ".github/dependabot.yml")"
 
     if [ "$desired" != "$current" ]; then
@@ -289,18 +289,19 @@ main() {
 
   # Iterar (uso process substitution para no perder vars por subshell)
   while IFS= read -r entry; do
-    local name stack consumes td dd
+    local name stack consumes td dd nd
     name="$(echo "$entry" | jq -r '.name')"
     stack="$(echo "$entry" | jq -r '.stack')"
     consumes="$(echo "$entry" | jq -r '.consumes | join(",")')"
     td="$(echo "$entry" | jq -r '.overrides.terraform_directory // "/"')"
     dd="$(echo "$entry" | jq -r '.overrides.docker_directories // [] | join(",")')"
+    nd="$(echo "$entry" | jq -r '.overrides.npm_directories // [] | join(",")')"
 
     if [ -n "$TARGET_REPO" ] && [ "$name" != "$TARGET_REPO" ]; then
       continue
     fi
 
-    process_repo "$name" "$stack" "$consumes" "$td" "$dd" || true
+    process_repo "$name" "$stack" "$consumes" "$td" "$dd" "$nd" || true
   done < <(echo "$repos_json" | jq -c '.[]')
 
   # Resumen

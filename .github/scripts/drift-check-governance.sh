@@ -33,7 +33,7 @@ declare -a DRIFT_ORPHAN_REPOS=()
 declare -a DRIFT_OVERRIDES=()
 
 check_repo() {
-  local name="$1" stack="$2" consumes="$3" terraform_directory="$4" docker_dirs_csv="${5:-}"
+  local name="$1" stack="$2" consumes="$3" terraform_directory="$4" docker_dirs_csv="${5:-}" npm_dirs_csv="${6:-}"
   local owner_repo="$ORG/$name"
 
   log "Checking $owner_repo"
@@ -46,7 +46,7 @@ check_repo() {
   # 1. dependabot drift
   if [[ ",$consumes," == *,dependabot,* ]]; then
     local desired current
-    desired="$(render_dependabot "$stack" "$terraform_directory" "$docker_dirs_csv" || true)"
+    desired="$(render_dependabot "$stack" "$terraform_directory" "$docker_dirs_csv" "$npm_dirs_csv" || true)"
     current="$(fetch_remote_file "$owner_repo" ".github/dependabot.yml")"
     if [ -n "$desired" ] && [ "$desired" != "$current" ]; then
       DRIFT_DEPENDABOT+=("- [\`$owner_repo\`](https://github.com/$owner_repo/blob/main/.github/dependabot.yml) — drift detectado (stack=\`$stack\`)")
@@ -105,8 +105,8 @@ check_orphans() {
   done <<< "$org_repos"
 }
 
-# Diff de docker_directories. Imprime líneas markdown con `+`/`-`.
-diff_docker_dirs() {
+# Diff de directorios (docker_directories / npm_directories). Imprime líneas markdown con `+`/`-`.
+diff_dirs() {
   local declared="$1" detected="$2"
   local declared_lines detected_lines d
   declared_lines="$(echo "$declared" | tr ',' '\n' | grep -v '^$' | sort -u || true)"
@@ -130,7 +130,7 @@ diff_docker_dirs() {
 
 # Detecta drift entre overrides declarados y estado real del repo.
 check_overrides_drift() {
-  local name="$1" declared_stack="$2" declared_tf="$3" declared_docker_csv="${4:-}"
+  local name="$1" declared_stack="$2" declared_tf="$3" declared_docker_csv="${4:-}" declared_npm_csv="${5:-}"
   local owner_repo="$ORG/$name"
 
   # Lista de archivos del repo vía API de árboles (autoritativa, sin clone).
@@ -149,10 +149,22 @@ check_overrides_drift() {
   if [ "$detected_docker_csv" != "$declared_docker_csv" ]; then
     findings+=("  - **\`docker_directories\`** desactualizado:")
     local _diff_out
-    _diff_out="$(diff_docker_dirs "$declared_docker_csv" "$detected_docker_csv")"
+    _diff_out="$(diff_dirs "$declared_docker_csv" "$detected_docker_csv")"
     while IFS= read -r line; do
       [ -n "$line" ] && findings+=("$line")
     done <<< "$_diff_out"
+  fi
+
+  # 1b. npm_directories (package.json fuera de la raíz)
+  local detected_npm_csv
+  detected_npm_csv="$(printf '%s\n' "$paths" | paths_detect_npm_dirs | tr '\n' ',' | sed 's/,$//')"
+  if [ "$detected_npm_csv" != "$declared_npm_csv" ]; then
+    findings+=("  - **\`npm_directories\`** desactualizado:")
+    local _diff_npm
+    _diff_npm="$(diff_dirs "$declared_npm_csv" "$detected_npm_csv")"
+    while IFS= read -r line; do
+      [ -n "$line" ] && findings+=("$line")
+    done <<< "$_diff_npm"
   fi
 
   # 2. terraform_directory (solo aplica a stack=terraform)
@@ -244,7 +256,7 @@ EOF
 
 ## 5. Manifest overrides desactualizados
 
-Repos en \`repos:\` cuyos \`stack\`/\`overrides\` no coinciden con la estructura real del repo (Dockerfiles añadidos/movidos/eliminados, \`terraform_directory\` inválido, stack sin marker).
+Repos en \`repos:\` cuyos \`stack\`/\`overrides\` no coinciden con la estructura real del repo (Dockerfiles o \`package.json\` fuera de la raíz añadidos/movidos/eliminados, \`terraform_directory\` inválido, stack sin marker).
 
 EOF
   if [ ${#DRIFT_OVERRIDES[@]} -eq 0 ]; then
@@ -280,14 +292,15 @@ main() {
   repos_json="$(yq eval -o=json '.repos' "$MANIFEST")"
 
   while IFS= read -r entry; do
-    local name stack consumes td dd
+    local name stack consumes td dd nd
     name="$(echo "$entry" | jq -r '.name')"
     stack="$(echo "$entry" | jq -r '.stack')"
     consumes="$(echo "$entry" | jq -r '.consumes | join(",")')"
     td="$(echo "$entry" | jq -r '.overrides.terraform_directory // "/"')"
     dd="$(echo "$entry" | jq -r '.overrides.docker_directories // [] | join(",")')"
-    check_repo "$name" "$stack" "$consumes" "$td" "$dd"
-    check_overrides_drift "$name" "$stack" "$td" "$dd"
+    nd="$(echo "$entry" | jq -r '.overrides.npm_directories // [] | join(",")')"
+    check_repo "$name" "$stack" "$consumes" "$td" "$dd" "$nd"
+    check_overrides_drift "$name" "$stack" "$td" "$dd" "$nd"
   done < <(echo "$repos_json" | jq -c '.[]')
 
   check_orphans

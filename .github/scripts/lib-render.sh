@@ -15,16 +15,18 @@
 # Source-eable: este archivo no se ejecuta directamente.
 
 # Renderiza un template de dependabot con sustitución de tokens y, opcionalmente,
-# appendea un bloque docker con N directorios.
+# appendea un bloque docker y/o un bloque npm con N directorios.
 #   $1 = stack (dotnet | node-bun | terraform | github-actions)
 #   $2 = terraform_directory (default "/")
 #   $3 = docker_dirs_csv (paths separados por coma; vacío = sin bloque docker)
+#   $4 = npm_dirs_csv    (paths separados por coma; vacío = sin bloque npm)
 #   stdout = contenido del dependabot.yml
 #   return = 1 (sin stdout) si el template del stack no existe
 render_dependabot() {
   local stack="$1"
   local terraform_directory="${2:-/}"
   local docker_dirs_csv="${3:-}"
+  local npm_dirs_csv="${4:-}"
   local template="${TEMPLATES_DIR:-docs/templates}/dependabot-$stack.yml"
 
   if [ ! -f "$template" ]; then
@@ -54,6 +56,27 @@ render_dependabot() {
     printf '    schedule:\n'
     printf '      interval: "weekly"\n'
     printf '      day: "wednesday"\n'
+    printf '    open-pull-requests-limit: 5\n'
+    printf '    groups:\n'
+    printf '      all:\n'
+    printf '        applies-to: version-updates\n'
+    printf '        patterns: ["*"]\n'
+  fi
+
+  # Appendear bloque npm si hay npm_directories en overrides del manifest.
+  # Mismo formato que el bloque docker (`directories:` plural); martes, como
+  # el template node-bun.
+  if [ -n "$npm_dirs_csv" ]; then
+    printf '\n'
+    printf '  - package-ecosystem: "npm"\n'
+    printf '    directories:\n'
+    IFS=',' read -ra NPM_DIRS <<< "$npm_dirs_csv"
+    for d in "${NPM_DIRS[@]}"; do
+      printf '      - "%s"\n' "$d"
+    done
+    printf '    schedule:\n'
+    printf '      interval: "weekly"\n'
+    printf '      day: "tuesday"\n'
     printf '    open-pull-requests-limit: 5\n'
     printf '    groups:\n'
     printf '      all:\n'
@@ -103,10 +126,12 @@ list_remote_workflows() {
 #   $4 = terraform_dir    (vacío = sin override)
 #   $5 = docker_dirs_csv  (vacío = sin override)
 #   $6 = stack_suffix     (opcional; ej. "# inferido")
+#   $7 = npm_dirs_csv     (vacío = sin override)
 emit_manifest_entry() {
   local name="$1" stack="$2"
   local consumes_csv="${3:-reusables,dependabot}"
   local terraform_dir="${4:-}" docker_dirs_csv="${5:-}" stack_suffix="${6:-}"
+  local npm_dirs_csv="${7:-}"
 
   local consumes_yaml="${consumes_csv//,/, }"
 
@@ -118,7 +143,7 @@ emit_manifest_entry() {
   fi
   printf '    consumes: [%s]\n' "$consumes_yaml"
 
-  if [ -n "$terraform_dir" ] || [ -n "$docker_dirs_csv" ]; then
+  if [ -n "$terraform_dir" ] || [ -n "$docker_dirs_csv" ] || [ -n "$npm_dirs_csv" ]; then
     printf '    overrides:\n'
     if [ -n "$terraform_dir" ]; then
       printf '      terraform_directory: %s\n' "$terraform_dir"
@@ -129,6 +154,14 @@ emit_manifest_entry() {
       IFS=',' read -ra _MANIFEST_DOCKER_DIRS <<< "$docker_dirs_csv"
       for d in "${_MANIFEST_DOCKER_DIRS[@]}"; do
         printf '        - %s\n' "$d"
+      done
+    fi
+    if [ -n "$npm_dirs_csv" ]; then
+      printf '      npm_directories:\n'
+      local n
+      IFS=',' read -ra _MANIFEST_NPM_DIRS <<< "$npm_dirs_csv"
+      for n in "${_MANIFEST_NPM_DIRS[@]}"; do
+        printf '        - %s\n' "$n"
       done
     fi
   fi

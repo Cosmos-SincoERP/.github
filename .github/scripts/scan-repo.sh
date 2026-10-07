@@ -4,7 +4,7 @@
 # Uso: bash .github/scripts/scan-repo.sh <repo-name>
 #
 # Hace un clone shallow temporal del repo en Cosmos-SincoERP, infiere el stack
-# y detecta overrides (docker_directories, terraform_directory). Imprime el
+# y detecta overrides (docker_directories, npm_directories, terraform_directory). Imprime el
 # bloque YAML listo para pegar en docs/repos-manifest.yml.
 #
 # La lógica de detección vive en lib-scan.sh (compartida con drift-check).
@@ -46,6 +46,9 @@ stack="$(scan_detect_stack "$CLONE_DIR")"
 # docker_directories como CSV (formato que consume emit_manifest_entry).
 docker_dirs_csv="$(scan_detect_docker_dirs "$CLONE_DIR" | tr '\n' ',' | sed 's/,$//')"
 
+# npm_directories (package.json fuera de la raíz) como CSV.
+npm_dirs_csv="$(scan_detect_npm_dirs "$CLONE_DIR" | tr '\n' ',' | sed 's/,$//')"
+
 terraform_dir=""
 if [ "$stack" = "terraform" ]; then
   terraform_dir="$(scan_detect_terraform_dir "$CLONE_DIR")"
@@ -56,4 +59,4 @@ if [ "$stack" = "terraform" ]; then
 fi
 
 # emit_manifest_entry vive en lib-render.sh (compartida con create-repo.sh).
-emit_manifest_entry "$REPO" "$stack" "reusables,dependabot" "$terraform_dir" "$docker_dirs_csv" "# inferido"
+emit_manifest_entry "$REPO" "$stack" "reusables,dependabot" "$terraform_dir" "$docker_dirs_csv" "# inferido" "$npm_dirs_csv"
