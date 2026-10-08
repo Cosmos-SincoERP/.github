@@ -149,7 +149,7 @@ repos:
       docker_directories:
         - /src/ApplicationPlane.Gateway
       npm_directories:
-        - /src/ApplicationPlane.IdentityAccess/app
+        - /src/ApplicationPlane.IdentityAccess.Views
 
   - name: ApplicationPlane.Infraestructura
     stack: terraform
