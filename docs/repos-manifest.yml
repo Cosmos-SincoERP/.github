@@ -21,10 +21,10 @@
 
 repos:
 
-  # creado por create-repo (baseline)
   - name: Cosmos.OpenTelemetry
-    stack: github-actions
+    stack: dotnet
     consumes: [reusables, dependabot]
+    # Sin Dockerfiles: librerías puras (distribución OpenTelemetry de Cosmos).
 
   # creado por create-repo (baseline)
   - name: Cosmos.MCPERP
