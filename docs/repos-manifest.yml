@@ -27,6 +27,11 @@ repos:
     # Sin Dockerfiles: librerías puras (distribución OpenTelemetry de Cosmos).
 
   # creado por create-repo (baseline)
+  - name: Cosmos.Web
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
+  # creado por create-repo (baseline)
   - name: Cosmos.MCPERP
     stack: github-actions
     consumes: [reusables, dependabot]
