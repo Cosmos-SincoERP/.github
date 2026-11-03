@@ -162,11 +162,6 @@ repos:
     consumes: [reusables, dependabot]
     # Dockerfiles a confirmar; sin override por ahora.
 
-  - name: ObligacionesPorPagar.ControlPlane
-    stack: dotnet
-    consumes: [reusables, dependabot]
-    # Dockerfiles a confirmar; sin override por ahora.
-
   # ── Asistente ───────────────────────────────────────────────────
   - name: Cosmos.Asistente
     stack: dotnet
