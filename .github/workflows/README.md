@@ -20,7 +20,7 @@ El tag `@v1` es mutable: avanza con cada release no-breaking. Breaking changes p
 
 ## Versionado de los reusables
 
-Los 14 reusables y las acciones compuestas de [`actions/`](../../actions) se versionan **como un solo conjunto** con un único **major móvil**
+Los 15 reusables y las acciones compuestas de [`actions/`](../../actions) se versionan **como un solo conjunto** con un único **major móvil**
 (`v1`, `v2`, …). La promoción del tag se decide **por PR mediante una etiqueta** y se
 aplica **automáticamente al mergear** — no hay que mover tags a mano.
 
@@ -62,8 +62,9 @@ Mantener estos nombres estables es contrato público: cambiarlos rompe los Rules
 | `_reusable-deploy-front.yml` | `Deploy Front estático (reusable)` | Despliega SPA Bun a Storage Account `$web` con activación atómica y env.js generado desde Key Vault. | `app_name`, `environment`, `storage_account_name`, `web_endpoint`, `key_vault_name`, `runner_group`, `github_packages`, `run_test`, `app_base_files`, `authorized_actor_team` + secret `ACTOR_GATE_TOKEN` |
 | `_reusable-deploy-swarm.yml` | `Deploy a Docker Swarm (reusable)` | Despliega un stack Compose a un Docker Swarm self-hosted inyectando tags por servicio. Valida coherencia ambiente↔recursos y, opt-in, el gate A5 de actor autorizado. | `stack_file`, `stack_name`, `image_tag`, `image_tags_json`, `acr_name`, `stack_environment`, `runner_group`, `authorized_actor_team` + secret `ACTOR_GATE_TOKEN` |
 | `_reusable-docker-build-push.yml` | `Build & Push Docker (reusable)` | Build multi-imagen contra ACR con alias mutables derivados del contexto (PR / main / manual). | `images_json`, `acr_name`, `repository_prefix`, `buildx_builder_name`, `runner_group`, `ref_context_override`, `mutable_alias_override` |
-| `_reusable-nuget-publish.yml` | `NuGet publish (reusable)` | Empaqueta un `.csproj` y publica al feed NuGet configurado (default nuget.org). | `project_path`, `package_version`, `dotnet_version`, `nuget_source` + secret `NUGET_API_KEY` |
-| `_reusable-nuget-publish-batch.yml` | `NuGet publish batch (reusable)` | **Estándar de release NuGet (lockstep):** publica todos los paquetes del catálogo con UNA versión (un tag `v<X>`), en paralelo. Sin anclas de dependencias internas. | `bump_type`, `version`, `tag_prefix`, `catalog_path`, `create_github_release` + secret `NUGET_API_KEY` |
+| `_reusable-nuget-publish.yml` | `NuGet publish (reusable)` | **En retiro** (reemplazado por `actions/nuget-publish`). Empaqueta un `.csproj` y publica al feed NuGet configurado (default nuget.org). | `project_path`, `package_version`, `dotnet_version`, `nuget_source` + secret `NUGET_API_KEY` |
+| `_reusable-nuget-lockstep-version.yml` | `NuGet lockstep version (reusable)` | Primera mitad del release NuGet lockstep: calcula la versión única, crea el tag `v<X>` y el Release y devuelve los proyectos del catálogo. **No publica**: el push lo hace el job del llamante con [`actions/nuget-publish`](#acción-actionsnuget-publish-trusted-publishing). | `bump_type`, `version`, `tag_prefix`, `catalog_path`, `create_github_release` |
+| `_reusable-nuget-publish-batch.yml` | `NuGet publish batch (reusable)` | **En retiro** (depende de `NUGET_API_KEY`; reemplazado por `_reusable-nuget-lockstep-version.yml` + `actions/nuget-publish`). Release NuGet lockstep: publica todos los paquetes del catálogo con UNA versión (un tag `v<X>`), en paralelo. Sin anclas de dependencias internas. | `bump_type`, `version`, `tag_prefix`, `catalog_path`, `create_github_release` + secret `NUGET_API_KEY` |
 | `_reusable-npm-publish.yml` | `Publicar a <registro> (reusable)` | Publica una librería npm (no versiona): `build` + `changeset publish` (idempotente). Soporta npm público (secret `NPM_TOKEN`) y GitHub Packages (con el `GITHUB_TOKEN` del workflow). | `working_directory`, `bun_version`, `npm_registry`, `publish_command` + secret opcional `NPM_TOKEN` |
 | `_reusable-secret-scan.yml` | `Secret Scan (trufflehog)` | Mitigación open-source de secret scanning (TruffleHog OSS) para repos privados sin GHAS (ADR 0002 E.6). | `base`, `extra-args` |
 | `_reusable-tests-dotnet.yml` | `Tests .NET (reusable)` | Restore + build + test de soluciones .NET, con exclusión de proyectos opcional. Sirve los dos dialectos de `dotnet test` (VSTest y Microsoft Testing Platform), eligiendo según el `global.json` del consumidor. | `solution_path`, `working_directory`, `dotnet_version`, `configuration`, `excluded_projects`, `test_runner`, `mtp_test_args` |
@@ -402,6 +403,15 @@ jobs:
 2. En el repo: environment `nuget` con *deployment branches* limitado a `main`.
 3. Correr el workflow una vez. La primera corrida fija la política a los IDs del repo y del
    owner; un push omitido por `--skip-duplicate` también cuenta.
+
+**Release lockstep** (varios paquetes, una sola versión por tag `v<X>`): el job `version`
+usa `_reusable-nuget-lockstep-version.yml`, que crea el tag y devuelve `projects`, y el
+job de publicación pasa `project_paths: ${{ needs.version.outputs.projects }}` con
+`version_property: Version`. Ver el caller de ejemplo en la cabecera del reusable.
+
+**Release con `_reusable-bump-and-tag.yml`** (versión calculada desde nuget.org): igual, el
+job de publicación toma `needs.bump-and-tag.outputs.new_version`. Varios paquetes de la
+misma familia van en un solo job, listados en `project_paths` en orden de dependencia.
 
 > La política queda a nombre de quien la crea: si esa persona deja la organización en
 > nuget.org, la política se desactiva y el publish falla con 401.
