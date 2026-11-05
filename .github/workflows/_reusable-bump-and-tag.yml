@@ -3,7 +3,8 @@ name: Bump SemVer + tag (reusable)
 # Calcula la siguiente version SemVer de un paquete NuGet consultando nuget.org,
 # crea y empuja el tag git correspondiente y, opcionalmente, abre un GitHub
 # Release con notas autogeneradas. No publica el paquete: eso es responsabilidad
-# del caller, que tipicamente encadena este reusable con `_reusable-nuget-publish.yml`.
+# del caller, que tipicamente encadena este reusable con un job que usa la accion
+# `actions/nuget-publish` (trusted publishing).
 
 concurrency:
   group: deploy-${{ github.workflow }}-${{ inputs.environment || 'default' }}

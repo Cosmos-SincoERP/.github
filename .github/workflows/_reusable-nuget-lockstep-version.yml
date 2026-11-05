@@ -1,0 +1,192 @@
+name: NuGet lockstep version (reusable)
+
+# Primera mitad del release NuGet LOCKSTEP del org: calcula la versión única del
+# release, crea el tag `<tag_prefix><X>` (y el GitHub Release) y devuelve la lista
+# de proyectos del catálogo. NO publica.
+#
+# La publicación la hace el job del repo llamante con la acción
+# `actions/nuget-publish` (trusted publishing): nuget.org solo acepta el token OIDC
+# de un workflow del mismo repo que declara la política, así que el push no puede
+# vivir en un reusable de este repo. Caller típico:
+#
+#   jobs:
+#     version:
+#       uses: Cosmos-SincoERP/.github/.github/workflows/_reusable-nuget-lockstep-version.yml@v1
+#       permissions:
+#         contents: write
+#       with:
+#         bump_type: ${{ inputs.bump_type }}
+#     publicar:
+#       needs: version
+#       runs-on: ubuntu-latest
+#       environment: nuget
+#       permissions:
+#         contents: read
+#         id-token: write
+#       steps:
+#         - uses: actions/checkout@v7
+#         - uses: Cosmos-SincoERP/.github/actions/nuget-publish@v1
+#           with:
+#             project_paths: ${{ needs.version.outputs.projects }}
+#             package_version: ${{ needs.version.outputs.version }}
+#             version_property: Version
+#             global_json: global.json
+#             nuget_user: ${{ vars.NUGET_USER }}
+#
+# Por qué lockstep: como todos los paquetes comparten la versión X, las dependencias
+# internas entre ellos se resuelven solas y el pack con `-p:Version=X` es correcto.
+#
+# Sin `concurrency` aquí: la declara el caller (compartir el grupo entre caller y
+# reusable provoca un deadlock que GitHub cancela).
+
+on:
+  workflow_call:
+    inputs:
+      bump_type:
+        description: "patch | minor | major. Deriva la versión del último tag. Ignorado si se da 'version'."
+        type: string
+        required: false
+        default: "minor"
+      version:
+        description: "Versión explícita X.Y.Z. Obligatoria en el primer release (aún no hay tag)."
+        type: string
+        required: false
+        default: ""
+      tag_prefix:
+        description: "Prefijo del tag de versión del repo. Default 'v' → v1.2.3."
+        type: string
+        required: false
+        default: "v"
+      catalog_path:
+        description: "Ruta al catálogo de paquetes publicables (YAML con .paquetes[].project_path)."
+        type: string
+        required: false
+        default: ".github/paquetes-nuget.yml"
+      create_github_release:
+        description: "Crear un GitHub Release del tag con notas autogeneradas."
+        type: boolean
+        required: false
+        default: true
+      release_ref:
+        description: "Ref git desde el cual se permite liberar."
+        type: string
+        required: false
+        default: "refs/heads/main"
+    outputs:
+      version:
+        description: "Versión del release (sin prefijo)."
+        value: ${{ jobs.resolver.outputs.version }}
+      tag:
+        description: "Tag creado (tag_prefix + versión)."
+        value: ${{ jobs.resolver.outputs.tag }}
+      projects:
+        description: "Rutas de los .csproj del catálogo, una por línea (entrada de project_paths de actions/nuget-publish)."
+        value: ${{ jobs.resolver.outputs.projects }}
+
+permissions:
+  contents: read
+
+jobs:
+  resolver:
+    name: Calcular versión y crear tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.calc.outputs.version }}
+      tag: ${{ steps.calc.outputs.tag }}
+      projects: ${{ steps.calc.outputs.projects }}
+    steps:
+      - name: Validar ref de origen
+        shell: bash
+        env:
+          REF: ${{ github.ref }}
+          ALLOWED: ${{ inputs.release_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$REF" != "$ALLOWED" ]]; then
+            echo "::error::Release permitido solo desde '$ALLOWED'. Recibido: $REF"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Calcular versión, proyectos y tag
+        id: calc
+        shell: bash
+        env:
+          BUMP_TYPE: ${{ inputs.bump_type }}
+          VERSION_INPUT: ${{ inputs.version }}
+          TAG_PREFIX: ${{ inputs.tag_prefix }}
+          CATALOG: ${{ inputs.catalog_path }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "$CATALOG" ]]; then
+            echo "::error::Catálogo no encontrado: $CATALOG"
+            exit 1
+          fi
+          projects=$(yq -r '.paquetes[].project_path' "$CATALOG")
+          n=$(printf '%s\n' "$projects" | grep -c . || true)
+          if [[ "$n" -eq 0 ]]; then
+            echo "::error::El catálogo '$CATALOG' no lista paquetes."
+            exit 1
+          fi
+
+          if [[ -n "$VERSION_INPUT" ]]; then
+            new="$VERSION_INPUT"
+            if [[ ! "$new" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::version inválida: '$new'. Formato esperado: X.Y.Z"
+              exit 1
+            fi
+          else
+            last=$(git tag -l "${TAG_PREFIX}[0-9]*.[0-9]*.[0-9]*" | sed "s/^${TAG_PREFIX}//" | sort -V | tail -n 1 || true)
+            if [[ -z "$last" ]]; then
+              echo "::error::No hay tags '${TAG_PREFIX}*' (primer release). Indica el input 'version' (ej. 1.0.0)."
+              exit 1
+            fi
+            IFS='.' read -r major minor patch <<< "$last"
+            case "$BUMP_TYPE" in
+              patch) patch=$((patch + 1)) ;;
+              minor) minor=$((minor + 1)); patch=0 ;;
+              major) major=$((major + 1)); minor=0; patch=0 ;;
+              *) echo "::error::bump_type inválido: $BUMP_TYPE"; exit 1 ;;
+            esac
+            new="${major}.${minor}.${patch}"
+          fi
+
+          tag="${TAG_PREFIX}${new}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "::warning::El tag ${tag} ya existe — modo reintento (no se recrea el tag)."
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$tag" -m "Release ${tag} (lockstep)"
+            git push origin "$tag"
+          fi
+
+          {
+            echo "version=${new}"
+            echo "tag=${tag}"
+            echo "projects<<EOF"
+            printf '%s\n' "$projects"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Versión: ${new}  (tag ${tag})  —  ${n} paquetes"
+
+      - name: Crear GitHub Release
+        if: ${{ inputs.create_github_release }}
+        shell: bash
+        env:
+          TAG: ${{ steps.calc.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG ya existe; no se recrea."
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes --verify-tag
+          fi
