@@ -1,16 +1,17 @@
 # CLAUDE.md — guía para agentes en este repo
 
 Repo `.github` de **Cosmos-SincoERP**: publica 14 workflows reusables
-(`.github/workflows/_reusable-*.yml`) versionados **como un solo conjunto** con un
+(`.github/workflows/_reusable-*.yml`) y las acciones compuestas de `actions/`, versionados **como un solo conjunto** con un
 único **major móvil** (`v1`, `v2`, …). Los consumidores los fijan con `@vN`.
 Detalle del versionado en [`.github/workflows/README.md`](.github/workflows/README.md).
 
 ## Al crear un PR — etiqueta de release (obligatorio si toca un reusable)
 
 Antes de abrir un PR, comprueba si el diff toca algún `.github/workflows/_reusable-*.yml`
+o alguna acción compuesta bajo `actions/` (se versionan con el mismo tag)
 (p. ej. `git diff --name-only origin/main...`).
 
-**Si toca un reusable**, el PR **debe** llevar exactamente una etiqueta de release.
+**Si toca un reusable o una acción**, el PR **debe** llevar exactamente una etiqueta de release.
 **Pregúntale al usuario** cuál corresponde, explicando la consecuencia, y aplícala:
 
 - **`release:move`** — cambio **no-breaking** (fix, mejora interna, nuevo input opcional).

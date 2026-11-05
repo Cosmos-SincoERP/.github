@@ -3,7 +3,7 @@ name: Release reusables (tag)
 # Aplica el tag de versión de los reusables tras el merge, según la etiqueta del PR:
 #   release:move  → mueve el major actual vN (cambio no-breaking).
 #   release:major → crea el siguiente major v(N+1) (cambio breaking); vN no se mueve.
-# Si el PR no tocó ningún reusable, no-op.
+# Si el PR no tocó ningún reusable ni ninguna acción compuesta (actions/), no-op.
 #
 # Usa la App `cosmos-governance-sync` (no el GITHUB_TOKEN por defecto): cuando se
 # active el Tag ruleset sobre v* (ADR 0003 §B.11), la App es el actor de bypass
@@ -78,7 +78,7 @@ jobs:
           else
             # Guard 1: ¿este PR tocó reusables? Si no, no-op.
             changed="$(gh pr diff "$PR_NUMBER" --repo "$REPO" --name-only)"
-            if ! echo "$changed" | grep -qE '^\.github/workflows/_reusable-.*\.ya?ml$'; then
+            if ! echo "$changed" | grep -qE '^(\.github/workflows/_reusable-.*\.ya?ml|actions/.+)$'; then
               echo "::notice::PR sin cambios en reusables. No-op."
               echo "action=none" >> "$GITHUB_OUTPUT"
               exit 0

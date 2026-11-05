@@ -6,7 +6,8 @@
 version: 2
 updates:
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # "/" cubre .github/workflows; las acciones compuestas viven en actions/<nombre>.
+    directories: ["/", "/actions/*"]
     schedule:
       interval: "weekly"
       day: "friday"
