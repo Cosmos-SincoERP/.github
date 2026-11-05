@@ -20,7 +20,7 @@ El tag `@v1` es mutable: avanza con cada release no-breaking. Breaking changes p
 
 ## Versionado de los reusables
 
-Los 14 reusables se versionan **como un solo conjunto** con un único **major móvil**
+Los 14 reusables y las acciones compuestas de [`actions/`](../../actions) se versionan **como un solo conjunto** con un único **major móvil**
 (`v1`, `v2`, …). La promoción del tag se decide **por PR mediante una etiqueta** y se
 aplica **automáticamente al mergear** — no hay que mover tags a mano.
 
@@ -28,7 +28,7 @@ aplica **automáticamente al mergear** — no hay que mover tags a mano.
 | --- | --- | --- |
 | `release:move` | Cambio **no-breaking** (fix, mejora interna, input nuevo opcional) | **Mueve `vN`** al merge commit. Lo reciben **todos** los consumidores `@vN` en su próximo run. |
 | `release:major` | Cambio **breaking** (renombrar un check name, cambiar/eliminar un input, cualquier cambio de contrato) | **Crea `v(N+1)`**; `vN` no se mueve. Los consumidores siguen en `vN` hasta migrar deliberadamente. |
-| _(ninguna)_ | El PR no toca ningún `_reusable-*.yml` | No-op. |
+| _(ninguna)_ | El PR no toca ningún `_reusable-*.yml` ni nada bajo `actions/` | No-op. |
 
 Dos workflows internos implementan esto:
 
@@ -355,7 +355,61 @@ La misma trampa aplica a la convención `TFVAR_*` de `_reusable-terraform-plan.y
 | `Key Vault Secrets User` | KV del BC y del ambiente (ej. `kv-oxp-dev-eus2-001`) | ✅ Asignado por `module.key_vault.vm_secrets_user` |
 | `Storage Blob Data Contributor` | SA compartido de fronts del plane (ej. en dev: `stfrontappldeveus2001`, RG `rg-appl-dev-eus2-001`) | ⚠️ **Pendiente** — hoy ese rol lo tiene el SP de tfops, no la MI de la VM del BC. Asignarlo manualmente vía `az role assignment create` antes del primer deploy de cada BC (ver §5b paso 2). |
 
+### Acción `actions/nuget-publish` (trusted publishing)
+
+Empaqueta uno o varios `.csproj` y los publica en nuget.org con **trusted publishing**: el
+paso `NuGet/login` cambia el token OIDC del job por una API key que dura una hora. No hay
+API key guardada en secretos, así que no hay nada que vencer ni que rotar.
+
+Es una **acción compuesta**, no un reusable, por una restricción de nuget.org: la política
+valida que el claim `job_workflow_ref` sea un workflow **del mismo repo** que la declara, y
+un reusable de este repo firma como `Cosmos-SincoERP/.github/...` (401). Los pasos de una
+acción compuesta corren dentro del job del llamante, así que firma el workflow del llamante.
+
+```yaml
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    environment: nuget            # el que exige la política de nuget.org
+    permissions:
+      contents: read
+      id-token: write             # sin esto no hay token OIDC
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Cosmos-SincoERP/.github/actions/nuget-publish@v1
+        with:
+          project_paths: src/Foo.Contratos/Foo.Contratos.csproj
+          package_version: 1.2.3
+          nuget_user: ${{ vars.NUGET_USER }}
+```
+
+| Input | Default | Descripción |
+|---|---|---|
+| `project_paths` | **requerido** | Uno o varios `.csproj`, uno por línea. |
+| `package_version` | **requerido** | SemVer sin `v`. |
+| `nuget_user` | **requerido** | Usuario de nuget.org que **creó** la política (no la organización). La org lo publica en la variable `NUGET_USER`. |
+| `version_property` | `PackageVersion` | `Version` para lockstep: fija también la versión de las dependencias internas. |
+| `dotnet_version` | `10.0.x` | SDK para `setup-dotnet`; se ignora si se da `global_json`. |
+| `global_json` | `""` | Ruta al `global.json`. |
+| `nuget_source` | `https://api.nuget.org/v3/index.json` | Feed destino. |
+
+**Alta de un repo** (una vez por repo):
+
+1. En nuget.org, con la cuenta de `NUGET_USER` (administradora de la organización dueña de
+   los paquetes): *Trusted Publishing* → política con owner = esa organización, repository
+   owner `Cosmos-SincoERP`, el repo, el **nombre** del archivo del workflow (sin ruta) y
+   environment `nuget`.
+2. En el repo: environment `nuget` con *deployment branches* limitado a `main`.
+3. Correr el workflow una vez. La primera corrida fija la política a los IDs del repo y del
+   owner; un push omitido por `--skip-duplicate` también cuenta.
+
+> La política queda a nombre de quien la crea: si esa persona deja la organización en
+> nuget.org, la política se desactiva y el publish falla con 401.
+
 ### `_reusable-nuget-publish.yml`
+
+> **En retiro**: depende del secret `NUGET_API_KEY`. Los repos migran a la acción
+> [`actions/nuget-publish`](#acción-actionsnuget-publish-trusted-publishing).
 
 Empaqueta un `.csproj` y publica el `.nupkg` resultante a un feed NuGet (por default `nuget.org`). Corre en runner hosted (`ubuntu-latest`) porque no necesita Managed Identity ni acceso al ACR — la auth al feed es por API key. Usa `setup-dotnet@v4` y `--skip-duplicate` para que un re-disparo de un tag ya publicado no rompa el job.
 

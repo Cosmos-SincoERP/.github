@@ -1,0 +1,155 @@
+name: NuGet publish (trusted publishing)
+description: >-
+  Empaqueta uno o varios .csproj y los publica en nuget.org con trusted publishing:
+  cambia el token OIDC del job por una API key que dura una hora, sin secretos guardados.
+
+# Por qué es una acción compuesta y no un workflow reusable:
+# nuget.org valida que el claim `job_workflow_ref` del token apunte a un workflow del
+# MISMO repo que declara la política. Un reusable de este repo firma como
+# `Cosmos-SincoERP/.github/.github/workflows/...` y nuget.org lo rechaza (401). Los
+# pasos de una acción compuesta corren dentro del job del repo llamante, así que el
+# token sale a nombre del workflow del llamante, que es el que la política reconoce.
+#
+# El job llamante debe declarar:
+#   permissions:
+#     contents: read
+#     id-token: write
+#   environment: nuget        # si la política de nuget.org lo exige
+# y hacer el checkout antes de usar esta acción.
+
+inputs:
+  project_paths:
+    description: "Uno o varios .csproj a empaquetar, uno por línea (relativos al checkout)."
+    required: true
+  package_version:
+    description: "SemVer del paquete (sin 'v'). Ej: 1.2.3"
+    required: true
+  nuget_user:
+    description: "Usuario de nuget.org que creó la política de trusted publishing (no la organización)."
+    required: true
+  version_property:
+    description: "Propiedad MSBuild que recibe la versión: PackageVersion (un paquete) o Version (lockstep, también fija la versión de las dependencias internas)."
+    required: false
+    default: "PackageVersion"
+  dotnet_version:
+    description: "Versión del SDK .NET para setup-dotnet. Se ignora si se da global_json."
+    required: false
+    default: "10.0.x"
+  global_json:
+    description: "Ruta al global.json para setup-dotnet. Vacío = usar dotnet_version."
+    required: false
+    default: ""
+  nuget_source:
+    description: "Feed destino."
+    required: false
+    default: "https://api.nuget.org/v3/index.json"
+
+outputs:
+  packages:
+    description: "Nombres de los .nupkg publicados (o ya existentes), uno por línea."
+    value: ${{ steps.push.outputs.packages }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validar el job llamante
+      shell: bash
+      env:
+        NUGET_USER: ${{ inputs.nuget_user }}
+      run: |
+        set -euo pipefail
+        if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]]; then
+          echo "::error::El job no puede pedir el token OIDC. Declara 'permissions: id-token: write' en el job que usa esta acción."
+          exit 1
+        fi
+        if [[ -z "$NUGET_USER" ]]; then
+          echo "::error::Falta 'nuget_user': el usuario de nuget.org dueño de la política. En la org se lee de la variable NUGET_USER."
+          exit 1
+        fi
+
+    - uses: actions/setup-dotnet@v6
+      with:
+        dotnet-version: ${{ inputs.global_json == '' && inputs.dotnet_version || '' }}
+        global-json-file: ${{ inputs.global_json }}
+
+    - name: Pack
+      shell: bash
+      env:
+        PROJECTS: ${{ inputs.project_paths }}
+        VERSION: ${{ inputs.package_version }}
+        VERSION_PROPERTY: ${{ inputs.version_property }}
+      run: |
+        set -euo pipefail
+        if [[ "$VERSION_PROPERTY" != "PackageVersion" && "$VERSION_PROPERTY" != "Version" ]]; then
+          echo "::error::version_property inválida: '$VERSION_PROPERTY'. Valores: PackageVersion | Version"
+          exit 1
+        fi
+        mapfile -t projects < <(printf '%s\n' "$PROJECTS" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$')
+        if [[ ${#projects[@]} -eq 0 ]]; then
+          echo "::error::project_paths no lista ningún proyecto."
+          exit 1
+        fi
+        for project in "${projects[@]}"; do
+          if [[ ! -f "$project" ]]; then
+            echo "::error::Proyecto no encontrado: $project"
+            exit 1
+          fi
+          dotnet pack "$project" \
+            -c Release \
+            -p:"$VERSION_PROPERTY"="$VERSION" \
+            -o ./nupkgs
+        done
+
+    - name: Login en nuget.org (OIDC)
+      id: login
+      uses: NuGet/login@v1
+      with:
+        user: ${{ inputs.nuget_user }}
+
+    - name: Push
+      id: push
+      shell: bash
+      env:
+        NUGET_SOURCE: ${{ inputs.nuget_source }}
+        NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        files=(./nupkgs/*.nupkg)
+        if [[ ${#files[@]} -eq 0 ]]; then
+          echo "::error::No se generaron .nupkg en ./nupkgs"
+          exit 1
+        fi
+        for pkg in "${files[@]}"; do
+          echo "  Push: $pkg"
+          dotnet nuget push "$pkg" \
+            --api-key "$NUGET_API_KEY" \
+            --source "$NUGET_SOURCE" \
+            --skip-duplicate
+        done
+        {
+          echo "packages<<EOF"
+          for pkg in "${files[@]}"; do basename "$pkg"; done
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Resumen
+      if: always()
+      shell: bash
+      env:
+        VERSION: ${{ inputs.package_version }}
+        SOURCE: ${{ inputs.nuget_source }}
+        PACKAGES: ${{ steps.push.outputs.packages }}
+      run: |
+        {
+          echo "## NuGet publish (trusted publishing)"
+          echo ""
+          echo "- Versión: \`$VERSION\`"
+          echo "- Feed: \`$SOURCE\`"
+          if [[ -n "$PACKAGES" ]]; then
+            echo "- Paquetes (publicados u omitidos por ya existir):"
+            printf '%s\n' "$PACKAGES" | sed 's/^/  - `/; s/$/`/'
+          else
+            echo "- Sin push: revisar los pasos anteriores."
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"

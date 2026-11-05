@@ -1,6 +1,7 @@
 name: Release label check
 
-# Gate requerido: si un PR toca un reusable (.github/workflows/_reusable-*.yml),
+# Gate requerido: si un PR toca un reusable (.github/workflows/_reusable-*.yml) o
+# una acción compuesta (actions/<nombre>/), que se versionan con el mismo tag,
 # exige EXACTAMENTE una etiqueta de release para que la decisión de versión sea
 # explícita antes del merge. El tagger (release-reusables.yml) la aplica al cerrar.
 #
@@ -45,7 +46,7 @@ jobs:
           changed="$(gh pr diff "$PR_NUMBER" --repo "$REPO" --name-only)"
           echo "Archivos cambiados:"; echo "$changed" | sed 's/^/  /'
 
-          if ! echo "$changed" | grep -qE '^\.github/workflows/_reusable-.*\.ya?ml$'; then
+          if ! echo "$changed" | grep -qE '^(\.github/workflows/_reusable-.*\.ya?ml|actions/.+)$'; then
             echo "::notice::Ningún reusable cambió. No se requiere etiqueta de release."
             {
               echo "## Release label check"
