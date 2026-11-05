@@ -1,6 +1,6 @@
 # CLAUDE.md — guía para agentes en este repo
 
-Repo `.github` de **Cosmos-SincoERP**: publica 15 workflows reusables
+Repo `.github` de **Cosmos-SincoERP**: publica 13 workflows reusables
 (`.github/workflows/_reusable-*.yml`) y las acciones compuestas de `actions/`, versionados **como un solo conjunto** con un
 único **major móvil** (`v1`, `v2`, …). Los consumidores los fijan con `@vN`.
 Detalle del versionado en [`.github/workflows/README.md`](.github/workflows/README.md).
