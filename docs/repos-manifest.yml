@@ -21,6 +21,11 @@
 
 repos:
 
+  # creado por create-repo (baseline)
+  - name: Plataforma
+    stack: github-actions
+    consumes: [reusables, dependabot]
+
   - name: Cosmos.OpenTelemetry
     stack: dotnet
     consumes: [reusables, dependabot]
