@@ -16,7 +16,7 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 .
 ├── .github/
 │   ├── workflows/
-│   │   ├── _reusable-*.yml          # 14 reusables CI/CD compartidos (los originales migrados desde Cosmos.PlatformWorkflows)
+│   │   ├── _reusable-*.yml          # 13 reusables CI/CD compartidos (los originales migrados desde Cosmos.PlatformWorkflows)
 │   │   ├── create-repo.yml          # Crea repos gobernados (baseline de seguridad)
 │   │   ├── sync-governance.yml      # Propaga cambios a repos consumidores
 │   │   ├── drift-check-governance.yml  # Reporta drift semanalmente
@@ -59,7 +59,7 @@ Repositorio especial de la organización **Cosmos-SincoERP**. Cumple tres funcio
 
 ## Para usar los reusables, ver
 
-- [`.github/workflows/README.md`](.github/workflows/README.md) — catálogo de los 14 reusables, sus inputs, sus checks expuestos, patrón de consumo y **versionado** (etiquetas `release:move` / `release:major`).
+- [`.github/workflows/README.md`](.github/workflows/README.md) — catálogo de los 13 reusables, sus inputs, sus checks expuestos, patrón de consumo y **versionado** (etiquetas `release:move` / `release:major`).
 
 ## Para entender el sync
 
