@@ -55,6 +55,12 @@ render_dependabot() {
     printf '      interval: "weekly"\n'
     printf '      day: "wednesday"\n'
     printf '    open-pull-requests-limit: 5\n'
+    # La versión mayor de .NET va atada al TFM y al global.json del repo: Dependabot solo ve el
+    # Dockerfile y propondría sdk:11.0 a un repo en net10.0, que rompe el restore. El salto de
+    # mayor se hace a mano, junto con el TFM; minors y parches siguen llegando.
+    printf '    ignore:\n'
+    printf '      - dependency-name: "dotnet/*"\n'
+    printf '        update-types: ["version-update:semver-major"]\n'
     printf '    groups:\n'
     printf '      all:\n'
     printf '        applies-to: version-updates\n'
