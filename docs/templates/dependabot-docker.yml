@@ -12,6 +12,10 @@ updates:
       interval: "weekly"
       day: "wednesday"
     open-pull-requests-limit: 5
+    # La versión mayor de .NET va atada al TFM y al global.json: el salto se hace a mano.
+    ignore:
+      - dependency-name: "dotnet/*"
+        update-types: ["version-update:semver-major"]
     groups:
       all:
         applies-to: version-updates
