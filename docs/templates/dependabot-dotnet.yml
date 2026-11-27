@@ -12,16 +12,21 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
+    # Los grupos solo juntan minors y parches. Cada versión mayor llega en su propio PR, para
+    # revisarla o cerrarla sola: agrupadas, una mayor que rompe arrastra a las demás.
     groups:
       microsoft:
         applies-to: version-updates
         patterns: ["Microsoft.*", "System.*"]
+        update-types: ["minor", "patch"]
       tests:
         applies-to: version-updates
         patterns: ["xunit*", "Moq*", "FluentAssertions*", "Bogus*"]
+        update-types: ["minor", "patch"]
       all-other:
         applies-to: version-updates
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
